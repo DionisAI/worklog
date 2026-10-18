@@ -38,8 +38,18 @@ PreToolUse sets dirty before a known potentially-mutating command, so the CLI's
 own update or ack can clear it before the tool returns. We do not parse arbitrary
 shell text as proof that it is read-only or exempt compound commands based on the
 presence of the word `worklog`. A read-only Bash command may cause one conservative
-Stop reminder. `stop_hook_active` prevents another continuation; unknown tools and
-interruptions have no universal semantic checkpoint guarantee.
+Stop reminder. Stop clears dirty when it sends a reminder, so it fires once per dirty
+episode; tools used during that continuation flag the next turn's Stop. A
+`stop_hook_active` Stop returns before any store access, so it never extends a
+continuation. Generated configs give PreToolUse a matcher for the same tool set, so
+other tools never start the hook. Unknown tools and interruptions have no universal
+semantic checkpoint guarantee.
+
+Hooks fail open. Both hosts treat exit 2 as a block (prompt rejected, tool refused,
+stop overridden), so the hook entrypoint maps every error to exit 0 with `{}` and a
+stderr line, plus a user-visible `systemMessage` at SessionStart/UserPromptSubmit.
+Stop loads the frontier before reminding, so a corrupt store is skipped rather than
+turned into a block. Only normal CLI commands keep exit 2 for structured errors.
 
 SessionStart loads the frontier. UserPromptSubmit compares the current revision
 against seen and injects only on change. Context is admitted whole, not sliced;
@@ -49,7 +59,8 @@ transport/trust/context behavior is still controlled by the host agent.
 ## Files and cost
 
 Normal core files: workspace.json (<4KiB), frontier.json (<=32KiB), worklog.lock
-(empty), optional runtime.json (<=16KiB). File count and retained bytes do not depend
+(empty), optional runtime.json (<=16KiB). A plain-directory `.worklog/` also holds a
+fixed 2-byte `.gitignore`, written only by init. File count and retained bytes do not depend
 on historical sessions or updates. Writes use a fixed `.<name>.tmp`, not unique
 orphan paths, and fsync both file and parent directory. Current and staging bytes
 can temporarily coexist. Hashing/parsing/checking scale with this bounded current

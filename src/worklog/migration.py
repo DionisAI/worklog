@@ -170,4 +170,4 @@ def apply(ws: Workspace, proposal: dict, *, discard_history: bool,
         fsync_dir(ws.store)
     return {"migrated": True, "active_cards": len(state["cards"]), "landmarks": len(state["notes"]),
             "history_archived": False, "legacy_history_deleted": True,
-            "note": "Reinstall BOTH hook adapters. Disable any old native Worklog plugin to avoid duplicate hooks."}
+            "note": "Run `worklog init` (adds .worklog/.gitignore to a plain-directory store), then reinstall BOTH hook adapters. Disable any old native Worklog plugin to avoid duplicate hooks."}

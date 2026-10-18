@@ -26,6 +26,7 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "^(Bash|Edit|MultiEdit|NotebookEdit|PowerShell|Write|apply_patch|exec_command|shell|shell_command|terminal)$",
         "hooks": [
           {
             "type": "command",

@@ -117,16 +117,52 @@ def ack_result(ws: Workspace, result: dict, sid: str | None) -> dict:
     return result
 
 
-def run(a) -> tuple[object, int]:
-    if a.command == "hook":
-        raw = sys.stdin.buffer.read(1024 * 1024 + 1)
-        if len(raw) > 1024 * 1024:
-            raise Invalid("Hook payload exceeds 1 MiB; no transcript is needed")
+HOOK_PAYLOAD_LIMIT = 1024 * 1024
+
+
+def hook_invocation(argv: list[str]) -> bool:
+    # --root is the only global option that may precede the subcommand.
+    if argv[:1] == ["--root"]:
+        argv = argv[2:]
+    elif argv[:1] and argv[0].startswith("--root="):
+        argv = argv[1:]
+    return argv[:1] == ["hook"]
+
+
+def hook_skipped(event: object, code: str, message: str) -> dict:
+    print(json.dumps({"error": code, "message": message}, ensure_ascii=False), file=sys.stderr)
+    if event in ("SessionStart", "UserPromptSubmit"):
+        return {"systemMessage": f"Worklog hook skipped ({code}): {message}"}
+    return {}
+
+
+def run_hook(a) -> dict:
+    """Hooks fail open: hosts read exit 2 as "block", so no Worklog problem may stop the session."""
+    event = a.event
+    try:
+        raw = sys.stdin.buffer.read(HOOK_PAYLOAD_LIMIT + 1)
+        if len(raw) > HOOK_PAYLOAD_LIMIT:
+            # Large Write/prompt payloads are transient host input, not state; drain and skip them.
+            while sys.stdin.buffer.read(HOOK_PAYLOAD_LIMIT):
+                pass
+            print(json.dumps({"skipped": "payload_too_large", "limit_bytes": HOOK_PAYLOAD_LIMIT}), file=sys.stderr)
+            return {}
         try:
             payload = json.loads(raw)
         except (ValueError, UnicodeError) as exc:
             raise Invalid("Hook stdin must contain JSON") from exc
-        return handle(payload, a.harness, event=a.event), 0
+        if event is None and isinstance(payload, dict):
+            event = payload.get("hook_event_name")
+        return handle(payload, a.harness, event=a.event)
+    except WorklogError as exc:
+        return hook_skipped(event, exc.code, str(exc))
+    except Exception as exc:  # Malformed payloads and I/O errors must not block the host either.
+        return hook_skipped(event, "internal_error", f"{type(exc).__name__}: {exc}")
+
+
+def run(a) -> tuple[object, int]:
+    if a.command == "hook":
+        return run_hook(a), 0
     ws = Workspace.open(a.root, create=a.command == "init", name=getattr(a, "name", None),
                         allow_legacy=a.command == "migrate")
     if a.command == "migrate":
@@ -206,19 +242,28 @@ def run(a) -> tuple[object, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    # Exit 2 is a structured CLI error, but a hook exiting 2 blocks the host's prompt/tool/stop.
+    failure = 0 if hook_invocation(argv) else 2
     try:
         a = parser().parse_args(argv)
         result, code = run(a)
         if isinstance(result, str):
             print(result, end="" if result.endswith("\n") else "\n")
         elif result is not None:
-            print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+            # ASCII hook output cannot fail on a non-UTF-8 locale or a payload's lone surrogate.
+            print(json.dumps(result, ensure_ascii=a.command == "hook", indent=2, allow_nan=False))
         return code
+    except SystemExit as exc:
+        if failure == 0 and exc.code not in (0, None):
+            print("{}")  # Codex Stop requires JSON on stdout even when the hook does nothing.
+            return 0
+        raise
     except WorklogError as exc:
         print(json.dumps({"error": exc.code, "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
-        return 2
+        return failure
     except OSError as exc:
         print(json.dumps({"error": "io_error", "message": str(exc)}, ensure_ascii=False), file=sys.stderr)
-        return 2
+        return failure
     except KeyboardInterrupt:
         return 130

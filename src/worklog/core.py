@@ -204,8 +204,8 @@ class Worklog:
         files = [p for p in self.ws.store.rglob("*") if p.is_file() and not p.is_symlink()]
         unexpected = [str(p.relative_to(self.ws.store)) for p in files
                       if p.relative_to(self.ws.store).as_posix() not in {
-                          "workspace.json", "frontier.json", "worklog.lock", "runtime.json",
-                          ".frontier.json.tmp", ".runtime.json.tmp", ".workspace.json.tmp"}]
+                          "workspace.json", "frontier.json", "worklog.lock", "runtime.json", ".gitignore",
+                          ".frontier.json.tmp", ".runtime.json.tmp", ".workspace.json.tmp", "..gitignore.tmp"}]
         return {"schema": 2, "active_cards": len(state["cards"]), "landmarks": len(state["notes"]),
                 "frontier_bytes": (self.ws.store / "frontier.json").stat().st_size,
                 "frontier_limit_bytes": MAX_FRONTIER_BYTES, "runtime_limit_bytes": MAX_RUNTIME_BYTES,

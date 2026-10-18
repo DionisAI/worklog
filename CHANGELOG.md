@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+Hooks fail open: `worklog hook` never exits 2 (which hosts read as "block"); store,
+input and internal errors become `{}` plus a stderr line, with a `systemMessage` at
+SessionStart/UserPromptSubmit. `stop_hook_active` and non-mutating PreToolUse calls
+return before any store access; payloads over 1 MiB are drained and ignored. Generated
+hook commands use `python -P`, and PreToolUse gets a matcher for potentially mutating
+tools. The Stop reminder now fires once per dirty episode. `worklog init` writes
+`.worklog/.gitignore` for plain-directory stores. Rerun `worklog install` and `worklog init`
+(also after `worklog migrate --apply`).
+
 ## 0.2.0 — Frontier (breaking)
 
 Replace the event-sourced worklog with one bounded current snapshot. Add GLOBAL

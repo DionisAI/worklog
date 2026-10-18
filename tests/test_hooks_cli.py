@@ -1,16 +1,22 @@
+import importlib.util
+import io
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from worklog.hooks import config, handle, install, session_id
-from worklog.errors import Invalid
+import worklog.cli as cli_module
+from worklog.hooks import MUTATING, config, handle, install, session_id
+from worklog.errors import Invalid, MigrationRequired
 from worklog.runtime import Runtime
 from worklog.cli import main
 from conftest import signature
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
@@ -223,3 +229,190 @@ def test_doctor_rejects_corrupt_runtime_cache(w):
     p = cli(w, ["clear-runtime", "--confirm"])
     assert p.returncode == 0
     assert cli(w, ["doctor"]).returncode == 0
+
+
+# Hooks fail open: Claude Code and Codex read exit 2 as "block the prompt/tool" or "do not stop".
+
+def break_store(w, kind):
+    store = w.ws.store
+    if kind == "legacy":
+        (store / "workspace.json").write_text(json.dumps(
+            {"schema_version": 1, "workspace_id": w.ws.workspace_id, "name": "old"}))
+    elif kind == "pending_migration":
+        (store / "migration.json").write_text("{}")
+    elif kind == "corrupt_runtime":
+        (store / "runtime.json").write_bytes(b"not-json")
+    elif kind == "corrupt_frontier":
+        (store / "frontier.json").write_bytes(b"<<<<<<< HEAD\n")
+
+
+def run_hook_cli(monkeypatch, capsys, body, *args):
+    stdin = io.TextIOWrapper(io.BytesIO(body if isinstance(body, bytes) else json.dumps(body).encode()))
+    monkeypatch.setattr(sys, "stdin", stdin)
+    code = main(["hook", *args])
+    out, err = capsys.readouterr()
+    return code, json.loads(out), err, stdin
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd"])
+@pytest.mark.parametrize("kind", ["legacy", "pending_migration", "corrupt_runtime", "corrupt_frontier"])
+def test_broken_store_never_blocks_the_host(w, payload, monkeypatch, capsys, kind, event):
+    handle({**payload, "hook_event_name": "PreToolUse", "tool_name": "Edit"}, "claude")  # pending reminder
+    break_store(w, kind)
+    body = {**payload, "hook_event_name": event, "tool_name": "Edit"}
+    code, out, err, _ = run_hook_cli(monkeypatch, capsys, body, "--harness", "claude", "--event", event)
+    assert code == 0 and "decision" not in out
+    if event in ("SessionStart", "UserPromptSubmit"):
+        assert out["systemMessage"].startswith("Worklog hook skipped (")
+        assert json.loads(err.splitlines()[-1])["error"] in out["systemMessage"]
+    else:
+        assert out == {}
+
+
+@pytest.mark.parametrize("event", ["UserPromptSubmit", "PreToolUse", "Stop"])
+@pytest.mark.parametrize("body", ["not json", "list", "bad_cwd", "deleted_cwd", "no_session"])
+def test_malformed_hook_input_never_blocks_the_host(w, monkeypatch, capsys, tmp_path, event, body):
+    raw = {"not json": b"{not json", "list": b"[1, 2]",
+           "bad_cwd": {"cwd": 7, "session_id": "native", "tool_name": "Edit"},
+           "deleted_cwd": {"cwd": str(tmp_path / "gone"), "session_id": "native", "tool_name": "Edit"},
+           "no_session": {"cwd": str(w.ws.root), "tool_name": "Edit"}}[body]
+    code, out, _, _ = run_hook_cli(monkeypatch, capsys, raw, "--harness", "codex", "--event", event)
+    assert code == 0 and "decision" not in out
+    assert ("systemMessage" in out) if event == "UserPromptSubmit" else out == {}
+
+
+def test_oversized_hook_payload_is_drained_and_ignored(w, payload, monkeypatch, capsys):
+    body = json.dumps({**payload, "hook_event_name": "PreToolUse", "tool_name": "Write",
+                       "tool_input": {"content": "x" * (3 * 1024 * 1024)}}).encode()
+    before = signature(w.ws.store)
+    code, out, err, stdin = run_hook_cli(monkeypatch, capsys, body, "--harness", "claude", "--event", "PreToolUse")
+    assert code == 0 and out == {} and "payload_too_large" in err
+    assert stdin.buffer.read() == b""  # fully drained, so the host never sees a broken pipe
+    assert signature(w.ws.store) == before
+
+
+def test_unexpected_hook_exception_fails_open(payload, monkeypatch, capsys):
+    def boom(*args, **kwargs):
+        raise RuntimeError("bug")
+    monkeypatch.setattr(cli_module, "handle", boom)
+    code, out, _, _ = run_hook_cli(monkeypatch, capsys, {**payload, "hook_event_name": "UserPromptSubmit"},
+                                   "--harness", "claude")
+    assert code == 0 and "internal_error" in out["systemMessage"]
+
+
+def test_hook_usage_errors_fail_open_but_cli_errors_still_exit_2(capsys, tmp_path):
+    for argv in (["hook", "--harness", "claude", "--event", "Stop", "--future-flag"],
+                 ["--root", str(tmp_path), "hook", "--harness", "unknown"],
+                 ["--root=" + str(tmp_path), "hook", "--harness", "unknown"]):
+        assert main(argv) == 0
+        assert json.loads(capsys.readouterr().out) == {}
+    with pytest.raises(SystemExit) as exc:
+        main(["show"])
+    assert exc.value.code == 2
+
+
+def test_noop_events_are_decided_before_store_access(w, payload):
+    break_store(w, "legacy")
+    assert handle({**payload, "hook_event_name": "Stop", "stop_hook_active": True}, "claude") == {}
+    assert handle({**payload, "hook_event_name": "PreToolUse", "tool_name": "Read"}, "claude") == {}
+    assert handle({**payload, "hook_event_name": "PreToolUse", "tool_name": ["Edit"]}, "claude") == {}
+    with pytest.raises(MigrationRequired):  # the CLI layer is what turns this into a no-op
+        handle({**payload, "hook_event_name": "Stop"}, "claude")
+
+
+def test_stop_reminder_is_one_shot_per_dirty_episode(w, payload):
+    def tool(name):
+        handle({**payload, "hook_event_name": "PreToolUse", "tool_name": name}, "claude")
+    def stop(**extra):
+        return handle({**payload, "hook_event_name": "Stop", **extra}, "claude")
+    tool("Bash")
+    assert stop()["decision"] == "block"
+    assert stop(stop_hook_active=True) == {}
+    assert stop() == {}  # An ignored reminder does not return on a later tool-free turn.
+    tool("Edit")
+    assert stop()["decision"] == "block"
+    tool("Write")  # Edits made during the granted continuation...
+    assert stop(stop_hook_active=True) == {}
+    assert stop()["decision"] == "block"  # ...are flagged at the next turn's Stop.
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_pretooluse_matcher_selects_only_mutating_tools(harness):
+    hooks = config(harness)["hooks"]
+    matcher = hooks["PreToolUse"][0]["matcher"]
+    assert all(re.search(matcher, name) for name in MUTATING)
+    assert not any(re.search(matcher, name) for name in
+                   ("Read", "Grep", "Glob", "WebFetch", "TodoWrite", "BashOutput", "mcp__fs__Edit"))
+    assert all("matcher" not in groups[0] for event, groups in hooks.items() if event != "PreToolUse")
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_generated_hook_ignores_project_modules_and_fails_open(w, payload, harness):
+    marker = w.ws.root / "PWNED"
+    for name in ("worklog.py", "json.py"):
+        (w.ws.root / name).write_text(f"open({str(marker)!r}, 'w').write({name!r})\n")
+    hooks = config(harness)["hooks"]
+    assert all(" -P -m worklog hook " in groups[0]["hooks"][0]["command"] for groups in hooks.values())
+    def run(event, body):
+        return subprocess.run(hooks[event][0]["hooks"][0]["command"], shell=True, cwd=w.ws.root,
+                              input=json.dumps(body), capture_output=True, text=True,
+                              env={**os.environ, "PYTHONPATH": str(ROOT / "src")}, timeout=15)
+    p = run("SessionStart", payload)
+    assert p.returncode == 0
+    assert "WORKLOG FRONTIER" in json.loads(p.stdout)["hookSpecificOutput"]["additionalContext"]
+    break_store(w, "corrupt_runtime")
+    p = run("Stop", {**payload, "hook_event_name": "Stop"})
+    assert p.returncode == 0 and json.loads(p.stdout) == {}
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_install_replaces_unfiltered_handler_and_keeps_user_groups(w, harness):
+    target = w.ws.root / (".claude/settings.local.json" if harness == "claude" else ".codex/hooks.json")
+    target.parent.mkdir()
+    user = {"matcher": "Read", "hooks": [{"type": "command", "command": "echo user-read"}]}
+    target.write_text(json.dumps({"hooks": {"PreToolUse": [
+        {"hooks": [{"type": "command", "command": f"/old/python -m worklog hook --harness {harness} --event PreToolUse"}]},
+        user]}}))
+    install(w.ws, harness)
+    groups = json.loads(target.read_text())["hooks"]["PreToolUse"]
+    assert user in groups
+    ours = [g for g in groups if g != user]
+    assert ours == config(harness)["hooks"]["PreToolUse"]
+    assert "Bash" in ours[0]["matcher"] and " -P -m worklog " in ours[0]["hooks"][0]["command"]
+
+
+def test_plugin_shells_match_generated_hooks():
+    spec = importlib.util.spec_from_file_location("build_plugins", ROOT / "tools/build_plugins.py")
+    build = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build)
+    skill = (ROOT / "src/worklog/templates/SKILL.md").read_bytes()
+    for harness in ("claude", "codex"):
+        shell = ROOT / "plugins" / harness
+        assert json.loads((shell / "hooks/hooks.json").read_text()) == build.plugin_hooks(harness)
+        assert (shell / "skills/worklog/SKILL.md").read_bytes() == skill
+
+
+def test_unclearable_dirty_flag_repeats_the_reminder_instead_of_losing_it(w, payload, monkeypatch):
+    handle({**payload, "hook_event_name": "PreToolUse", "tool_name": "Edit"}, "claude")
+    original = Runtime.update
+    def failing(self, sid, **patch):
+        if patch == {"dirty": False}:
+            raise OSError(28, "No space left on device")
+        return original(self, sid, **patch)
+    monkeypatch.setattr(Runtime, "update", failing)
+    stop = {**payload, "hook_event_name": "Stop"}
+    assert handle(stop, "claude")["decision"] == "block"
+    monkeypatch.setattr(Runtime, "update", original)
+    assert handle(stop, "claude")["decision"] == "block"  # flag kept, so the reminder repeats once more
+    assert handle(stop, "claude") == {}
+
+
+def test_hook_output_is_ascii_json_under_a_non_utf8_locale(w, payload):
+    w.add("cjk", "中文卡片", "当前位置 — 已定位", "下一步")
+    command = config("claude")["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    p = subprocess.run(command, shell=True, input=json.dumps(payload), capture_output=True, text=True,
+                       env={**os.environ, "PYTHONPATH": str(ROOT / "src"), "PYTHONIOENCODING": "latin-1"},
+                       timeout=15, encoding="latin-1")
+    assert p.returncode == 0 and p.stdout.isascii()
+    assert "中文卡片" in json.loads(p.stdout)["hookSpecificOutput"]["additionalContext"]

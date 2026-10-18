@@ -12,7 +12,7 @@ def test_replaces_current_without_history(w, card):
     saved = (w.ws.store / "frontier.json").read_text()
     assert "Located duplicate counting" not in saved
     assert w.show("replay")["next"] == "Add regression test"
-    assert set(p.name for p in w.ws.store.iterdir()) == {"workspace.json", "frontier.json", "worklog.lock"}
+    assert set(p.name for p in w.ws.store.iterdir()) == {"workspace.json", "frontier.json", "worklog.lock", ".gitignore"}
 
 
 def test_read_context_status_do_not_write(w, card):

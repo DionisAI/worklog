@@ -116,7 +116,7 @@ w.update('replay', c['revision'], {'current': 'unpublished-' + 'x'*1200})
         assert len(list(w.ws.store.glob(".*.tmp"))) == 1
     w.update("replay", card["revision"], {"current": "next valid write"})
     assert not list(w.ws.store.glob(".*.tmp"))
-    assert w.stats()["files"] == 3
+    assert w.stats()["files"] == 4  # includes the fixed .worklog/.gitignore
 
 
 def test_abrupt_crash_after_replace_has_valid_new_state(w, card):
@@ -277,3 +277,48 @@ def test_plain_then_git_then_worktree_still_shares_frontier(w, card, tmp_path):
     b = Worklog(Workspace.open(other))
     assert b.ws.store == w.ws.store
     assert b.show("replay") == card
+
+
+def git_env():
+    # No global/system config and no default XDG excludes file: only .worklog/.gitignore may ignore.
+    return {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "XDG_CONFIG_HOME": os.devnull}
+
+
+def test_plain_store_is_git_ignored_from_init(w, card):
+    assert (w.ws.store / ".gitignore").read_bytes() == b"*\n"
+    assert Worklog(w.ws).stats()["unexpected_files"] == []
+    root = w.ws.root
+    (root / "code.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=git_env())
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, env=git_env())
+    staged = subprocess.run(["git", "-C", str(root), "diff", "--cached", "--name-only"],
+                            check=True, capture_output=True, text=True, env=git_env()).stdout.split()
+    assert staged == ["code.py"]
+
+
+def test_init_adds_missing_ignore_file_but_reads_never_do(w, card):
+    ignore = w.ws.store / ".gitignore"
+    ignore.unlink()
+    frontier = (w.ws.store / "frontier.json").read_bytes()
+    Worklog(Workspace.open(w.ws.root)).context()
+    assert not ignore.exists()
+    Workspace.open(w.ws.root, create=True)
+    assert ignore.read_bytes() == b"*\n"
+    assert (w.ws.store / "frontier.json").read_bytes() == frontier
+
+
+def test_git_common_dir_store_gets_no_ignore_file(tmp_path):
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, env=git_env())
+    ws = Workspace.open(tmp_path, create=True)
+    assert ws.store.name == "worklog" and not (ws.store / ".gitignore").exists()
+    assert not (tmp_path / ".worklog").exists()
+
+
+def test_init_refuses_a_symlinked_ignore_file(w, tmp_path):
+    ignore = w.ws.store / ".gitignore"
+    target = tmp_path / "elsewhere"
+    target.write_text("*\n")
+    ignore.unlink()
+    ignore.symlink_to(target)  # git does not follow an in-tree .gitignore symlink
+    with pytest.raises(Invalid):
+        Workspace.open(w.ws.root, create=True)

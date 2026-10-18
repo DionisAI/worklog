@@ -135,8 +135,10 @@ worklog note 1 --expect NEW_WORKSPACE_REV --clear
 ## 自动 Hook 做什么，不做什么
 
 启动与压缩后读取当前 frontier；后续新消息只有状态有变才重新注入。可能改动文件的工具调用
-只设置一个临时 dirty 布尔值，不记录命令、回复或完整工具输出。Stop 最多提醒一次，请 Agent
-更新当前状态。已有语义更新会清除提醒；若只是只读操作、没有实质变化，执行：
+只设置一个临时 dirty 布尔值，不记录命令、回复或完整工具输出；其他工具不会触发 Hook。
+每段可能改动文件的工具使用之后，Stop 最多提醒一次并清除标记；续写期间若再调用可能改动文件的工具
+（包括用 Bash 读取 `worklog status`）且未执行 update/ack，下一轮 Stop 仍会提醒。
+已有语义更新会清除提醒；若只是只读操作、没有实质变化，执行：
 
 ```sh
 worklog ack --session SESSION_ID
@@ -144,6 +146,12 @@ worklog ack --session SESSION_ID
 
 不要为了消除提醒编造工作进展。Hook 本身不会推断根因、下一步或测试成功；仍需要 Agent
 遵循 Skill。中途也要更新当前卡，异常退出后无法保证保住上一次更新以来的进展。
+
+Hook 出错时一律放行（退出码 0）：存储损坏、尚未迁移或输入异常只写到 stderr，并在会话开始／
+提交消息时显示一条警告，不会阻塞提问、工具调用或停止。超过 1 MiB 的输入会被读完并忽略（该次工具调用
+不会标记 dirty）。生成的 Hook 命令使用 `python -P`，不会自动把会话目录加入 sys.path，项目里的
+`worklog.py`、`json.py` 不会被当作 Hook 代码导入（PYTHONPATH 中的条目，包括空条目，仍然生效）。
+升级后重新运行 `worklog install`。
 
 临时 Hook 标记最多 32 个、总共 16 KiB、24 小时过期，SessionEnd 清除；超量只淘汰这些缓存，
 不会淘汰当前工作卡或历史关键节点。`worklog context/status/show` 本身不写入任何状态。
@@ -162,8 +170,9 @@ worklog ack --session SESSION_ID
 中文按 UTF-8 字节计费，不是“1 字符 = 1 字节”。容量满了明确拒绝该次写入，要求整理当前卡，
 不会偷偷截掉未完成工作。这里的 16 张卡是防止 current 也变成无限积累列表的边界，不是任务排程器。
 
-Git 仓库使用 `<git-common-dir>/worklog/`；普通目录使用 `.worklog/`。
-正常核心文件只有 workspace.json、frontier.json、worklog.lock、可选 runtime.json。
+Git 仓库使用 `<git-common-dir>/worklog/`；普通目录使用 `.worklog/`，`worklog init` 会在其中写入
+固定的 `.gitignore`（`*`），之后执行 `git init` 也不会把它提交（已有目录可重新运行 `worklog init` 补上）。
+正常核心文件只有 workspace.json、frontier.json、worklog.lock、可选 runtime.json；普通目录的 `.worklog/` 另有上述固定 `.gitignore`。
 写入用固定临时文件与原子替换；反复中断不会留下越来越多随机临时文件。没有旧 frontier 备份。
 checksum 用于检测意外损坏，不是签名。损坏会报错，不会自动当作空项目重新开始。
 
@@ -186,6 +195,7 @@ worklog migrate --plan > /tmp/worklog-frontier-review.json
 ```sh
 worklog migrate --apply /tmp/worklog-frontier-review.json \
   --discard-history --confirm-agents-stopped
+worklog init   # 普通目录的 .worklog/ 会补上 .gitignore
 worklog install claude
 worklog install codex
 worklog doctor

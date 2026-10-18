@@ -7,7 +7,7 @@ import sys
 from importlib.resources import files
 
 from .core import Worklog
-from .errors import Invalid, NotFound
+from .errors import Invalid, NotFound, WorklogError
 from .model import identifier
 from .runtime import Runtime
 from .util import atomic_write, digest, file_lock
@@ -16,6 +16,9 @@ from .workspace import Workspace
 EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd")
 MUTATING = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "PowerShell",
             "apply_patch", "exec_command", "shell", "shell_command", "terminal"}
+# Anchored so Claude Code (regex path) and Codex (regex) both match whole tool names only;
+# other tools then never spawn the hook. handle() still filters on MUTATING.
+TOOL_MATCHER = "^(" + "|".join(sorted(MUTATING)) + ")$"
 # Recognize old callbacks as no-ops so reinstalling the adapter is not a replay risk.
 OLD_NOOP_EVENTS = {"PostToolUse", "PreCompact"}
 
@@ -41,6 +44,13 @@ def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
         return {}
     if event not in EVENTS:
         raise Invalid(f"Unsupported hook event: {event}")
+    # Decide no-op events before touching the store, so a broken store cannot extend a
+    # continuation the host already granted or tax read-only tools.
+    if event == "Stop" and payload.get("stop_hook_active"):
+        return {}
+    tool = payload.get("tool_name")
+    if event == "PreToolUse" and (not isinstance(tool, str) or tool not in MUTATING):
+        return {}
     cwd = payload.get("cwd", os.getcwd())
     if not isinstance(cwd, str):
         raise Invalid("Hook cwd must be text")
@@ -68,21 +78,27 @@ def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
                     "Before editing, claim an existing relevant card or add one. Never create a card per session.\n")
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     if event == "PreToolUse":
-        if payload.get("tool_name") in MUTATING:
-            # A boolean only, no commands/transcripts/output retained. CLI update/ack clears it.
-            runtime.update(sid, dirty=True)
-            foreign = [c["id"] for c in worklog.read()["cards"].values()
-                       if c["owner"] and c["owner"]["checkout_id"] == ws.checkout_id
-                       and c["owner"]["session_id"] != sid]
-            if foreign:
-                return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
-                    "WORKLOG: another cooperating writer owns this checkout (" + ", ".join(foreign) +
-                    "). Read status and coordinate; use a separate worktree for parallel edits. This is an advisory, not an OS sandbox."}}
+        # A boolean only, no commands/transcripts/output retained. CLI update/ack clears it.
+        runtime.update(sid, dirty=True)
+        foreign = [c["id"] for c in worklog.read()["cards"].values()
+                   if c["owner"] and c["owner"]["checkout_id"] == ws.checkout_id
+                   and c["owner"]["session_id"] != sid]
+        if foreign:
+            return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
+                "WORKLOG: another cooperating writer owns this checkout (" + ", ".join(foreign) +
+                "). Read status and coordinate; use a separate worktree for parallel edits. This is an advisory, not an OS sandbox."}}
         return {}
     if event == "Stop":
         flags = runtime.get(sid)
-        if payload.get("stop_hook_active") or not flags or not flags["dirty"]:
+        if not flags or not flags["dirty"]:
             return {}
+        worklog.read()  # A broken frontier raises here, so the hook fails open instead of blocking.
+        # One reminder per dirty episode: an ignored reminder must not return on later turns.
+        # Tools used during the granted continuation set dirty again for the next Stop.
+        try:
+            runtime.update(sid, dirty=False)
+        except (WorklogError, OSError) as exc:  # An unclearable flag repeats the reminder, never loses it.
+            print(json.dumps({"warning": "dirty_flag_not_cleared", "message": str(exc)}), file=sys.stderr)
         return {"decision": "block", "reason":
             f"Before stopping, update the CURRENT frontier in place (session {sid}). Read `worklog status`; "
             "save current position, next action and still-valid cautions with `worklog update`/`handoff`. "
@@ -95,14 +111,17 @@ def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
 def config(harness: str, python: str | None = None) -> dict:
     if harness not in {"claude", "codex"}:
         raise Invalid("Supported adapters: claude, codex")
-    command_base = f"{shlex.quote(python or sys.executable)} -m worklog hook --harness {harness}"
+    # -P drops the implicit cwd entry from sys.path, so a project's worklog.py/json.py is not
+    # imported as hook code. Entries the user adds to PYTHONPATH still apply.
+    command_base = f"{shlex.quote(python or sys.executable)} -P -m worklog hook --harness {harness}"
     result: dict = {"hooks": {}}
     for event in EVENTS:
         handler = {"type": "command", "command": f"{command_base} --event {event}",
                    "timeout": 3 if event == "SessionEnd" else 15}
         if harness == "codex" and event in {"SessionStart", "UserPromptSubmit"}:
             handler["additionalContextLimit"] = 60000
-        result["hooks"][event] = [{"hooks": [handler]}]
+        group = {"matcher": TOOL_MATCHER, "hooks": [handler]} if event == "PreToolUse" else {"hooks": [handler]}
+        result["hooks"][event] = [group]
     return result
 
 

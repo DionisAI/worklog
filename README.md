@@ -156,12 +156,23 @@ before retrying. This is not an exactly-once external execution service.
 ## Hooks
 
 `SessionStart` loads current state; `UserPromptSubmit` reinjects it only when its
-revision changed. `PreToolUse` marks a disposable dirty boolean for known potentially
-mutating tool classes. A `Stop` hook gives at most one reminder continuation to
-update the frontier. A successful CLI update/handoff/finish clears that reminder;
-`worklog ack --session ID` clears it when nothing materially changed. `SessionEnd`
-deletes the sidecar entry, not the work card. No per-tool command/output history is
-stored, and no heartbeat is necessary.
+revision changed. `PreToolUse` runs only for known potentially mutating tool classes
+(its `matcher`) and marks a disposable dirty boolean. A `Stop` hook sends one reminder
+per stretch of such tool use and then clears the flag. Potentially mutating tools used
+during that continuation (including the Bash call that reads `worklog status`) flag the
+next turn's Stop. A successful CLI update/handoff/finish clears that reminder;
+`worklog ack --session ID` clears it when nothing materially changed.
+`SessionEnd` deletes the sidecar entry, not the work card. No per-tool command/output
+history is stored, and no heartbeat is necessary.
+
+Hooks fail open. Claude Code and Codex read exit code 2 as "block", so `worklog hook`
+always exits 0: a corrupt or un-migrated store, malformed input, or an internal error
+is reported on stderr (and as a user-visible `systemMessage` at SessionStart and
+UserPromptSubmit) instead of blocking prompts, tools, or stopping. Payloads over 1 MiB
+are drained and ignored, so such a tool call is not marked dirty. Generated commands run
+`python -P`: the session directory is not implicitly on `sys.path`, so a project's own
+`worklog.py` or `json.py` is not imported as hook code (entries you add to PYTHONPATH,
+even an empty one, still apply). Rerun `worklog install` to update existing hook configs.
 
 Semantic updates still require the agent to use the skill/CLI. Hooks cannot invent
 accurate next actions, guarantee cooperation, or capture uncheckpointed thinking
@@ -181,6 +192,7 @@ worklog migrate --plan > /tmp/worklog-frontier-review.json
 # be explicitly listed in acknowledged_omissions if their old cards are omitted.
 worklog migrate --apply /tmp/worklog-frontier-review.json \
   --discard-history --confirm-agents-stopped
+worklog init   # adds .worklog/.gitignore to a plain-directory store
 worklog install claude
 worklog install codex
 worklog doctor
@@ -207,7 +219,9 @@ PYTHONPATH=src python tools/soak.py --iterations 10000 --output docs/soak-result
 ```
 
 Git repositories store state in `<git-common-dir>/worklog/`; plain directories
-use `.worklog/`. Core files are `workspace.json`, `frontier.json`, `worklog.lock`,
+use `.worklog/`, which `worklog init` marks with a fixed `.gitignore` (`*`) so a later
+`git init` never commits it (rerun `worklog init` to add it to an existing store).
+Core files are `workspace.json`, `frontier.json`, `worklog.lock`,
 and the optional `runtime.json`. Context reads do not modify file bytes or mtimes.
 No default on-disk Markdown projection duplicates old frontier content.
 

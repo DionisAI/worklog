@@ -108,4 +108,11 @@ class Workspace:
             raise MigrationRequired("v0.1 event ledger detected. Stop all old agents, then use `worklog migrate --plan`.")
         if (store / "migration.json").exists() and not allow_legacy:
             raise MigrationRequired("An offline migration needs completion; rerun the same migration apply command.")
+        ignore = store / ".gitignore"
+        if create and store.name == ".worklog" and (ignore.is_symlink() or not ignore.exists()):
+            # A working-tree store must never be committed: clones and worktrees would fork it.
+            # Git ignores a symlinked .gitignore, so atomic_write refuses one with a clear error.
+            with file_lock(store / "worklog.lock"):
+                if ignore.is_symlink() or not ignore.exists():
+                    atomic_write(ignore, b"*\n")
         return cls(root, store, config["workspace_id"], config["name"])

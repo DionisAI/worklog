@@ -51,14 +51,14 @@ def measure(iterations: int) -> dict:
         readonly_unchanged = before == sig()
         assert readonly_unchanged
         assert max_frontier <= 32768 and max_runtime <= 16384
-        assert all(s["files"] == 4 for s in samples)
+        assert all(s["files"] == 5 for s in samples)  # 4 core files + fixed .gitignore
         assert len({s["frontier_bytes"] for s in samples}) == 1
         assert not (w.ws.store / "events").exists() and not (w.ws.store / "artifacts").exists()
         # Closing hundreds of worklines leaves no task/session history.
         for i in range(200):
             transient = w.add(f"transient_{i}", "Short task", "Working", "Finish")["card"]
             w.finish(transient["id"], transient["revision"], confirmed=True)
-        assert len(w.read()["cards"]) == 1 and w.stats()["files"] == 4
+        assert len(w.read()["cards"]) == 1 and w.stats()["files"] == 5
         return {"passed": True, "iterations": iterations, "semantic_writes_in_loop": iterations * 2,
                 "unique_hook_sessions": iterations, "samples": samples,
                 "max_frontier_bytes": max_frontier, "max_runtime_bytes": max_runtime,
