@@ -23,6 +23,11 @@ class Busy(Conflict):
     code = "busy"
 
 
+class ReadOnly(WorklogError):
+    """The store cannot be written from this process (e.g. .git inside an agent sandbox)."""
+    code = "read_only"
+
+
 class Capacity(Invalid):
     code = "capacity"
 

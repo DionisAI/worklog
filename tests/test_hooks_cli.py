@@ -16,7 +16,8 @@ from worklog.hooks import MUTATING, config, handle, install, session_id
 from worklog.errors import Invalid, MigrationRequired
 from worklog.runtime import Runtime
 from worklog.cli import main
-from conftest import signature
+from worklog.workspace import Workspace
+from conftest import needs_file_modes, read_only, signature
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -305,6 +306,30 @@ def test_cli_structured_errors(w, capsys):
     code = main(["--root", str(w.ws.root), "show", "missing"])
     error = json.loads(capsys.readouterr().err)
     assert code == 2 and error["error"] == "not_found"
+
+
+@needs_file_modes
+def test_cli_reads_a_read_only_git_store_and_names_it_on_writes(tmp_path):
+    # Codex's workspace-write sandbox keeps <repo>/.git, and so .git/worklog, read-only.
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+    w = Worklog(Workspace.open(tmp_path, create=True))
+    assert w.ws.store == (tmp_path / ".git" / "worklog").resolve()
+    card = w.add("replay", "Fix replay", "Located duplicate counting", "Add regression test")["card"]
+    with read_only(w.ws.store):
+        status = cli(w, ["status"])
+        assert status.returncode == 0, status.stderr
+        assert json.loads(status.stdout)["cards"] == {"replay": card}
+        assert json.loads(cli(w, ["show", "replay"]).stdout) == card
+        context = cli(w, ["context", "--session", "agent"])
+        assert context.returncode == 0 and "Fix replay" in context.stdout
+        assert cli(w, ["doctor"]).returncode == 0
+        for args in (["update", "replay", "--expect", card["revision"], "--current", "lost"],
+                     ["ack", "--session", "agent"]):
+            p = cli(w, args)
+            error = json.loads(p.stderr)
+            assert p.returncode == 2 and error["error"] == "read_only"
+            assert str(w.ws.store) in error["message"] and "outside the agent sandbox" in error["message"]
+    assert w.show("replay") == card
 
 
 def test_doctor_rejects_corrupt_runtime_cache(w):

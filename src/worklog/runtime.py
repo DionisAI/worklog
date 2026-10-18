@@ -46,7 +46,7 @@ class Runtime:
 
     def get(self, sid: str) -> dict | None:
         identifier(sid, "session_id")
-        with file_lock(self.ws.lock):
+        with file_lock(self.ws.lock, shared=True):
             entry = self._load()["sessions"].get(sid)
             if entry is not None and self.clock() - entry["at"] < RUNTIME_TTL_SECONDS:
                 return entry

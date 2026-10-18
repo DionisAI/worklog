@@ -9,7 +9,10 @@ The envelope is capped at 32768 UTF-8 bytes. It contains no event cursor or log.
 An update takes `worklog.lock`, reads at most that bounded file, checks the card's
 revision, replaces supplied fields, validates all count/byte/ownership constraints,
 then publishes via a fixed staging file and atomic rename. Identical updates do
-not write or advance revision. Reads never mutate semantic or runtime state.
+not write or advance revision. Reads never mutate semantic or runtime state. They
+take a shared lock through a read-only descriptor of `worklog.lock`, so they work in a
+store this process cannot write (`.git` is read-only inside Codex's workspace-write
+sandbox); a write there fails with a `read_only` error naming the store.
 
 Cards have independent CAS tokens. Workspace-level overview/landmark selection uses
 a workspace CAS token. Tokens are random fixed-width UUID4 values, not growing
