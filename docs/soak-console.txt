@@ -1,0 +1,58 @@
+{
+  "passed": true,
+  "iterations": 10000,
+  "semantic_writes_in_loop": 20000,
+  "unique_hook_sessions": 10000,
+  "samples": [
+    {
+      "iterations": 32,
+      "frontier_bytes": 576,
+      "files": 4,
+      "total_file_bytes": 4246,
+      "runtime_bytes": 3538,
+      "current_cards": 1,
+      "landmarks": 3
+    },
+    {
+      "iterations": 100,
+      "frontier_bytes": 576,
+      "files": 4,
+      "total_file_bytes": 4246,
+      "runtime_bytes": 3538,
+      "current_cards": 1,
+      "landmarks": 3
+    },
+    {
+      "iterations": 1000,
+      "frontier_bytes": 576,
+      "files": 4,
+      "total_file_bytes": 4246,
+      "runtime_bytes": 3538,
+      "current_cards": 1,
+      "landmarks": 3
+    },
+    {
+      "iterations": 10000,
+      "frontier_bytes": 576,
+      "files": 4,
+      "total_file_bytes": 4246,
+      "runtime_bytes": 3538,
+      "current_cards": 1,
+      "landmarks": 3
+    }
+  ],
+  "max_frontier_bytes": 576,
+  "max_runtime_bytes": 3538,
+  "readonly_context_reads": 1000,
+  "readonly_state_reads": 1000,
+  "readonly_changed_files": 0,
+  "completed_cards_created_then_deleted": 200,
+  "remaining_current_cards": 1,
+  "max_historical_landmarks": 3,
+  "event_history_files": 0,
+  "artifact_files": 0,
+  "snapshot_backup_files": 0,
+  "elapsed_seconds": 33.529,
+  "scope": "Accelerated local API execution with real fsync/replace; no live agents or provider accounts; not real power-loss testing."
+}
+

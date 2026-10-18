@@ -1,0 +1,10 @@
+WARNING: The directory '/home/oai/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+Processing /mnt/data/worklog_frontier/worklog
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: workspace-worklog
+  Building wheel for workspace-worklog (pyproject.toml): started
+  Building wheel for workspace-worklog (pyproject.toml): finished with status 'done'
+  Created wheel for workspace-worklog: filename=workspace_worklog-0.2.0-py3-none-any.whl size=32708 sha256=0ac85e927ad197fa39405cabf79c3934ae90c45fc2fcaad6efc17a39026e1ab7
+  Stored in directory: /tmp/pip-ephem-wheel-cache-nf8a1o1b/wheels/af/1e/78/45f5c5976e6e1975559b9413e1d7e88cba186501ed09eadd3f
+Successfully built workspace-worklog

@@ -1,0 +1,114 @@
+{
+  "version": "0.2.0",
+  "date": "2026-10-16",
+  "python": "3.13.5",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "tests": 131,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "pytest_elapsed_seconds": 23.77,
+  "statement_coverage_percent": 83.67,
+  "statements": 1041,
+  "covered_statements": 871,
+  "soak": {
+    "passed": true,
+    "iterations": 10000,
+    "semantic_writes_in_loop": 20000,
+    "unique_hook_sessions": 10000,
+    "samples": [
+      {
+        "iterations": 32,
+        "frontier_bytes": 576,
+        "files": 4,
+        "total_file_bytes": 4246,
+        "runtime_bytes": 3538,
+        "current_cards": 1,
+        "landmarks": 3
+      },
+      {
+        "iterations": 100,
+        "frontier_bytes": 576,
+        "files": 4,
+        "total_file_bytes": 4246,
+        "runtime_bytes": 3538,
+        "current_cards": 1,
+        "landmarks": 3
+      },
+      {
+        "iterations": 1000,
+        "frontier_bytes": 576,
+        "files": 4,
+        "total_file_bytes": 4246,
+        "runtime_bytes": 3538,
+        "current_cards": 1,
+        "landmarks": 3
+      },
+      {
+        "iterations": 10000,
+        "frontier_bytes": 576,
+        "files": 4,
+        "total_file_bytes": 4246,
+        "runtime_bytes": 3538,
+        "current_cards": 1,
+        "landmarks": 3
+      }
+    ],
+    "max_frontier_bytes": 576,
+    "max_runtime_bytes": 3538,
+    "readonly_context_reads": 1000,
+    "readonly_state_reads": 1000,
+    "readonly_changed_files": 0,
+    "completed_cards_created_then_deleted": 200,
+    "remaining_current_cards": 1,
+    "max_historical_landmarks": 3,
+    "event_history_files": 0,
+    "artifact_files": 0,
+    "snapshot_backup_files": 0,
+    "elapsed_seconds": 33.529,
+    "scope": "Accelerated local API execution with real fsync/replace; no live agents or provider accounts; not real power-loss testing."
+  },
+  "release_smoke": {
+    "passed": true,
+    "wheel_version": "0.2.0",
+    "loaded_from_fresh_site_packages": true,
+    "PYTHONPATH_removed": true,
+    "installed_cli_handoff_flow": true,
+    "installed_demo": true,
+    "installed_project_hooks": {
+      "claude": {
+        "generated_command_ran": true,
+        "context_included_frontier": true,
+        "live_provider_session": false
+      },
+      "codex": {
+        "generated_command_ran": true,
+        "context_included_frontier": true,
+        "live_provider_session": false
+      }
+    },
+    "final_current_cards": 0,
+    "final_global_landmarks": 3,
+    "actual_v01_wheel_migration": {
+      "passed": true,
+      "legacy_event_files_before": 14,
+      "core_files_after": 3,
+      "current_semantics_retained": true,
+      "history_archived": false,
+      "old_adapters_replaced": true,
+      "old_version_rejects_new_schema": true
+    }
+  },
+  "wheel_sha256": "0ac85e927ad197fa39405cabf79c3934ae90c45fc2fcaad6efc17a39026e1ab7",
+  "wheel_matches_tested_runtime_source": true,
+  "not_tested": [
+    "live logged-in Claude Code/Codex sessions",
+    "macOS hardware",
+    "Python 3.11/3.12",
+    "Windows",
+    "network filesystems",
+    "real hardware power loss",
+    "remote GitHub CI execution"
+  ],
+  "scope": "Cooperating local processes, current-state storage, fixed global landmark slots; not an OS sandbox."
+}

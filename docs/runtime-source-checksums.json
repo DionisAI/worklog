@@ -1,0 +1,54 @@
+[
+  {
+    "file": "worklog/__init__.py",
+    "sha256": "770f959600d2cdaf5b3d1955a2c4520f43a0565fcfabd565939e920c39c21726"
+  },
+  {
+    "file": "worklog/__main__.py",
+    "sha256": "79ee6f134c5c5193377cf9b189cbdcc3e2095e49ba9cec310114441c15a917c4"
+  },
+  {
+    "file": "worklog/cli.py",
+    "sha256": "68d0fc63aff4a8030d4631c30dc1c189fd758605f24bf9a602dab08623cc36dc"
+  },
+  {
+    "file": "worklog/core.py",
+    "sha256": "a22a880f73b270d12df16ef2fa2e5a44f3ffb29cabf609cfeecbc7441a7da72d"
+  },
+  {
+    "file": "worklog/errors.py",
+    "sha256": "ad485b28f2c0195cb7e5699d18eed34f85e20523c52e2ad9e43aa5dcb15775d6"
+  },
+  {
+    "file": "worklog/hooks.py",
+    "sha256": "14e841f90aeb5692797a3f7ee90ab349ef1f484498b472c244b0e1573a77930a"
+  },
+  {
+    "file": "worklog/migration.py",
+    "sha256": "409999dd3200b2f3ef9621fc4ee0fb5fbd08e3a0d854b1171b33bbd5d569ac20"
+  },
+  {
+    "file": "worklog/model.py",
+    "sha256": "c1a2f0350f87238aed5390250d4ae27c2bafd09b1566b1b9c3aded4d7cb994a2"
+  },
+  {
+    "file": "worklog/runtime.py",
+    "sha256": "0e22f37dc2ec6c5ecbd1ac4ded357038dd8408fb719402fe727b129bf78a17da"
+  },
+  {
+    "file": "worklog/storage.py",
+    "sha256": "f16cbfc83e8155a21582e4b72137367ec2a269ebfab48f220b5664ba1b4bd119"
+  },
+  {
+    "file": "worklog/templates/SKILL.md",
+    "sha256": "b852a5873f45e5a0bc80fb57c3d6b899e4b8739e0fc0236d5bdbe11f85e2e8bb"
+  },
+  {
+    "file": "worklog/util.py",
+    "sha256": "b1ad4453c5f38aa3694ee92f241e0af2ea2de76d2d8faa92212be0e8d1d01742"
+  },
+  {
+    "file": "worklog/workspace.py",
+    "sha256": "99d94682ead889e2ed707525e4dbbef8adea746e2faf8eda50e5e1bbb1f5fa80"
+  }
+]

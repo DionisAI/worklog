@@ -1,0 +1,7 @@
+include LICENSE README.md CHANGELOG.md
+recursive-include src/worklog/templates *.md
+recursive-include docs *.md *.json *.txt *.xml
+recursive-include examples *.py
+recursive-include tools *.py
+recursive-include tests *.py
+recursive-include plugins *.json *.md

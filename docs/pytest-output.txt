@@ -1,0 +1,23 @@
+........................................................................ [ 54%]
+...........................................................              [100%]
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.13.5-final-0 ________________
+
+Name                       Stmts   Miss  Cover
+----------------------------------------------
+src/worklog/__init__.py        1      0   100%
+src/worklog/__main__.py        2      2     0%
+src/worklog/cli.py           203     87    57%
+src/worklog/core.py          166      8    95%
+src/worklog/errors.py         16      0   100%
+src/worklog/hooks.py         132     14    89%
+src/worklog/migration.py     135     21    84%
+src/worklog/model.py         109      6    94%
+src/worklog/runtime.py        79     10    87%
+src/worklog/storage.py        40      1    98%
+src/worklog/util.py           68      5    93%
+src/worklog/workspace.py      90     16    82%
+----------------------------------------------
+TOTAL                       1041    170    84%
+Coverage JSON written to file docs/coverage.json
+131 passed in 23.77s

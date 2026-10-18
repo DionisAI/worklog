@@ -1,0 +1,31 @@
+{
+  "passed": true,
+  "wheel_version": "0.2.0",
+  "loaded_from_fresh_site_packages": true,
+  "PYTHONPATH_removed": true,
+  "installed_cli_handoff_flow": true,
+  "installed_demo": true,
+  "installed_project_hooks": {
+    "claude": {
+      "generated_command_ran": true,
+      "context_included_frontier": true,
+      "live_provider_session": false
+    },
+    "codex": {
+      "generated_command_ran": true,
+      "context_included_frontier": true,
+      "live_provider_session": false
+    }
+  },
+  "final_current_cards": 0,
+  "final_global_landmarks": 3,
+  "actual_v01_wheel_migration": {
+    "passed": true,
+    "legacy_event_files_before": 14,
+    "core_files_after": 3,
+    "current_semantics_retained": true,
+    "history_archived": false,
+    "old_adapters_replaced": true,
+    "old_version_rejects_new_schema": true
+  }
+}
