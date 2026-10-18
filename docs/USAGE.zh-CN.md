@@ -166,6 +166,38 @@ Hook 出错时一律放行（退出码 0）：存储损坏、尚未迁移或输�
 它们只以只读方式打开锁文件并加共享锁，所以存储目录不可写时也能读取（例如 Codex workspace-write
 沙箱中只读的 `.git/worklog`）；在那里写入会返回 `read_only` 错误，并给出存储目录路径。
 
+## Codex 沙箱
+
+Codex 的 workspace-write 沙箱（`:workspace` 权限配置）让 `<repo>/.git` 只读，而 Git 仓库的存储在
+`<git-common-dir>/worklog`；在链接工作树里，它更是完全在可写工作区之外。读取（`status`、`show`、
+`context`）照常可用。`worklog install codex` 还会写入 `.codex/rules/worklog.rules`：这条 Codex 规则让
+frontier 写入命令（`add`、`update`、`checkpoint`、`handoff`、`claim`、`start`、`resume`、`takeover`、
+`finish`、`note`、`overview`、`ack`）不经询问在沙箱外运行。`launch`、`install`、`init`、`migrate`、
+`clear-runtime` 以及带 `--root` 的写法仍走 Codex 的正常审批。Codex 只在受信任的项目里加载项目规则
+（与 `.codex/hooks.json` 相同），并且规则功能仍属实验性。被放行的命令会在沙箱外运行 PATH 上第一个
+`worklog`，Hook 也是如此：请把 Worklog 安装在项目之外（不要以可编辑方式从项目安装，也不要装在项目内的
+虚拟环境里），否则 Agent 可以改动这段代码从而离开沙箱。
+
+没有这条规则时（项目未受信任、有托管策略限制，或使用不带规则文件的原生插件），写入会返回 `read_only`，
+Stop 提醒会让 Agent 报告存储路径和本来要保存的更新，而不是反复重试。备选做法是让存储目录可写：用
+`worklog stats` 的 `"store"` 取得绝对路径（链接工作树的存储在主检出的 `.git` 里），在
+`~/.codex/config.toml` 中授权。用权限配置时，只有这个目录变为可写，`.git` 其余部分仍然只读
+（已用 codex-cli 0.163.0 验证）：
+
+```toml
+default_permissions = "worklog"
+
+[permissions.worklog]
+extends = ":workspace"
+
+[permissions.worklog.filesystem]
+"/path/to/repo/.git/worklog" = "write"
+```
+
+若任何配置层设置了 `sandbox_mode`，Codex 会忽略 `default_permissions` 而使用旧设置：在
+`[sandbox_workspace_write]` 下写 `writable_roots = ["/path/to/repo/.git/worklog"]`，或单次会话用
+`codex --add-dir /path/to/repo/.git/worklog`。这两种是 Codex 文档中的做法，本项目未实际验证。
+
 ## 不会无限增长的边界
 
 | 对象 | 硬上限 |

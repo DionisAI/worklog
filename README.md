@@ -214,6 +214,44 @@ after a crash. A read-only shell command can conservatively trigger a reminder;
 unknown custom mutating tools may not trigger one. The current frontier remains
 usable without hooks and without the disposable sidecar.
 
+## Codex sandbox
+
+Codex's workspace-write sandbox (its `:workspace` profile) keeps `<repo>/.git` read-only,
+and a Git store lives in `<git-common-dir>/worklog`; from a linked worktree that is
+outside the writable workspace altogether. Reads (`status`, `show`, `context`) still work.
+`worklog install codex` also writes `.codex/rules/worklog.rules`, a Codex rule that runs
+the frontier writes (`add`, `update`, `checkpoint`, `handoff`, `claim`, `start`, `resume`,
+`takeover`, `finish`, `note`, `overview`, `ack`) outside the sandbox without a prompt.
+`launch`, `install`, `init`, `migrate`, `clear-runtime` and `--root` forms keep Codex's
+normal approval. Codex loads project rules only in a trusted project, like
+`.codex/hooks.json`, and calls rules experimental. An allowed command runs the first
+`worklog` on PATH unsandboxed, as the hooks do: install Worklog outside the project (not
+editable from it, not in a virtualenv inside it), or an agent could change that code and
+leave the sandbox.
+
+Without the rule (an untrusted project, a managed policy, or the native plugin shell,
+which ships no rules file), a write fails with `read_only`, and the Stop reminder tells
+the agent to report the store path and the update it would have saved instead of
+retrying. The fallback is to make the store writable: get its absolute path from
+`worklog stats` (`"store"`; for a linked worktree it is in the main checkout's `.git`)
+and grant it in `~/.codex/config.toml`. With a permissions profile, only that directory
+becomes writable and the rest of `.git` stays read-only (checked with codex-cli 0.163.0):
+
+```toml
+default_permissions = "worklog"
+
+[permissions.worklog]
+extends = ":workspace"
+
+[permissions.worklog.filesystem]
+"/path/to/repo/.git/worklog" = "write"
+```
+
+If any config layer sets `sandbox_mode`, Codex ignores `default_permissions` and uses its
+older settings: `writable_roots = ["/path/to/repo/.git/worklog"]` under
+`[sandbox_workspace_write]`, or `codex --add-dir /path/to/repo/.git/worklog` for one
+session. Codex documents both; they were not exercised here.
+
 ## Migrating 0.1 (explicit, offline, destructive to old history)
 
 Stop all 0.1 agent/launcher processes first. Existing external jobs may continue;

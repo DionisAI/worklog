@@ -98,3 +98,13 @@ changes. If there was no material change (for example a read-only shell command)
 `worklog ack --session ID`. Do not fabricate progress. Hooks stop after one reminder
 continuation and never extract/store your transcript. They cannot guarantee an update
 after an interrupt, crash, ignored instructions, or unsupported custom tools.
+
+## Sandboxes
+
+`status`, `show` and `context` work even where the store is read-only. A write there
+fails with error `read_only`, naming the store path and the fix. Do not retry, `ack`,
+edit the store files, or work around the sandbox; tell the user the store path, the fix,
+and the update you would have saved. Codex keeps `.git` (and so `.git/worklog`)
+read-only; `worklog install codex` adds `.codex/rules/worklog.rules`, which runs the
+frontier writes outside the sandbox in a trusted project. Run them as plain
+`worklog SUBCOMMAND ...` commands so that rule matches.

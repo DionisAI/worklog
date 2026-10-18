@@ -77,7 +77,8 @@ def _open_lock(path: Path, shared: bool) -> int | None:
         raise ReadOnly(f"Worklog store is read-only for this process: {path.parent} ({exc.strerror}). "
                        "Reads (status, show, context) still work. Run this write where that "
                        "directory is writable, e.g. outside the agent sandbox, or grant this "
-                       "process write access to it.") from exc
+                       "process write access to it. In Codex, `worklog install codex` adds a "
+                       "rule that runs frontier writes outside the sandbox.") from exc
 
 
 @contextlib.contextmanager
