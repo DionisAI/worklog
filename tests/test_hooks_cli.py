@@ -6,8 +6,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -778,3 +780,37 @@ def test_a_corrupt_workspace_json_is_rebuilt_from_the_intact_frontier(w, card, c
     (w.ws.store / "workspace.json.broken").unlink()
     assert cli(w, ["init"]).returncode == 0
     assert Workspace.open(w.ws.root).workspace_id == w.ws.workspace_id and w.show("replay") == card
+
+
+def launch_agent(w, tmp_path, body):
+    """Start `worklog launch` in its own process group, like a terminal, and wait until the agent is ready."""
+    ready = tmp_path / "agent-ready"
+    agent = f"import os,signal,sys,time\n{body}\nopen({str(ready)!r}, 'w').close()\ntime.sleep(10)\nsys.exit(5)\n"
+    p = subprocess.Popen([sys.executable, "-m", "worklog", "--root", str(w.ws.root), "launch", "--harness", "test",
+                          "--", sys.executable, "-c", agent], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, start_new_session=True, env={**os.environ, "PYTHONPATH": str(ROOT / "src")})
+    for _ in range(200):
+        if ready.exists():
+            return p
+        time.sleep(0.05)
+    p.kill()
+    raise AssertionError("agent never became ready: " + p.communicate()[1])
+
+
+def test_launch_leaves_ctrl_c_to_the_agent(w, tmp_path):
+    p = launch_agent(w, tmp_path, "signal.signal(signal.SIGINT, lambda *a: (print('agent cancels its turn', flush=True), sys.exit(5)))")
+    os.killpg(p.pid, signal.SIGINT)  # what a terminal's Ctrl-C sends to the whole group
+    out, err = p.communicate(timeout=15)
+    assert p.returncode == 5 and "agent cancels its turn" in out  # not killed, exit code passed through
+
+
+@pytest.mark.parametrize("signum, group", [(signal.SIGHUP, True), (signal.SIGTERM, False)])
+def test_launch_releases_its_card_when_the_terminal_closes(w, card, tmp_path, signum, group):
+    claim = ("from worklog.core import Worklog; from worklog.workspace import Workspace\n"
+             f"Worklog(Workspace.open('.')).claim('replay', {card['revision']!r}, session=os.environ['WORKLOG_SESSION_ID'])")
+    p = launch_agent(w, tmp_path, claim)
+    (os.killpg if group else os.kill)(p.pid, signum)  # a closed terminal hangs up the group; TERM hits the launcher
+    p.communicate(timeout=15)
+    assert p.returncode == 128 + signum
+    released = w.show("replay")
+    assert released["owner"] is None and released["status"] == "needs_check"
