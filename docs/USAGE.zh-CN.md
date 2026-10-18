@@ -201,6 +201,58 @@ extends = ":workspace"
 `[sandbox_workspace_write]` 下写 `writable_roots = ["/path/to/repo/.git/worklog"]`，或单次会话用
 `codex --add-dir /path/to/repo/.git/worklog`。这两种是 Codex 文档中的做法，本项目未实际验证。
 
+## 切换账号或 Agent
+
+frontier 存在项目的存储里，而不在某个 Agent 的对话记录里，所以一个 Claude 账号开始的工作可以由另一个
+账号、Codex 或其他 Agent 接着做。Worklog 不负责登录、切换账号，也不检测额度用完；它只把当前卡
+（进展、下一步、注意事项）带过切换。只使用你自己的账号，并遵守各自套餐的条款。
+
+**切换之前。**
+
+- 下一个会话从这张卡最后一次 `update` 或 `checkpoint` 开始。额度用完的会话已经无法再保存任何内容，
+  而碰到上限的那一轮也不会收到 Stop 提醒：轮次因 API 错误结束时，Claude Code 运行的是 `StopFailure`
+  而不是 `Stop`。上次更新之后的改动只在工作区里，请用 `git status`、`git diff` 和卡片对照。
+- 正常结束旧会话（`/exit`；在 Codex 应用里要退出或归档该对话，切换到别的对话并不会结束它）。它的
+  SessionEnd Hook 或 `worklog launch` 结束时会释放它的卡，`working` 变为 `needs_check`。
+- 旧会话仍开着，或在 SessionEnd 运行前被杀掉，就仍然持有这张卡。确认它没有正在进行的轮次、它启动的任务
+  也不再写入后，新会话运行 `worklog takeover CARD --expect REV --session NEW --confirm-old-writer-stopped`
+  （被拒绝的 `claim` 会打印填好的这条命令）。之后旧会话对这张卡的写入会被拒绝。
+- CLI 不需要模型，卡释放后你也可以在终端里自己记一笔：`worklog update CARD --expect REV --current '...' --next '...'`。
+
+**另一个 Claude 账号。** 在会话里运行 `/login` 会把这个会话切到另一个账号并保留对话，但这个配置目录之后只保存
+新的登录。想同时保持两个账号登录，就给每个账号一个配置目录：各自有自己的登录、设置、插件和会话记录，所以
+`--continue` 和 `--resume` 列表不会列出另一个账号的对话。两种方式下带过去的都是 frontier。如果 shell 里导出了
+`ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN` 或 `CLAUDE_CODE_OAUTH_TOKEN`，它在每个目录里都优先于登录，请先取消。
+
+```sh
+alias claude-b='CLAUDE_CONFIG_DIR=~/.claude-b claude'   # 第一次运行时登录账号 B
+```
+
+`worklog install claude` 装的项目 Hook 和 Skill 在每个账号接受该文件夹的信任对话框后都会生效。原生插件按配置目录
+分别安装；每个项目只用其中一种，否则两者都会运行。
+
+**Codex。** 运行 `worklog install codex`，在 Codex 中信任该项目并重启，再在 `/hooks` 里信任 Worklog 的 Hook。
+Codex 会跳过新增或改动过的 Hook，直到你信任它们，所以重新安装改变了命令后要再信任一次。它的 Hook 注入同一个
+frontier，上一节的 Codex 规则让它的 frontier 写入可以离开沙箱。Codex 会话认领 Claude 会话释放的卡，并用同样方式释放。
+
+**其他 Agent。** 能运行 shell 命令的 Agent 不靠 Hook 也能使用 CLI，只是没有自动注入，也没有保存提醒。先给它
+Skill：只有 `worklog install claude` 和 `worklog install codex` 会写入（分别写到 `.claude/skills/worklog/SKILL.md`
+和 `.agents/skills/worklog/SKILL.md`，同时写入该 harness 的 Hook），所以运行其中一个，再让 Agent 的说明文件指向它。
+多数 Agent 的说明文件是 `AGENTS.md`；Gemini CLI 默认读 `GEMINI.md`，除非 `context.fileName` 设置里列了 `AGENTS.md`。
+然后通过 `launch` 启动它：
+
+```sh
+worklog launch --harness gemini --account personal -- gemini
+```
+
+在里面，Agent 运行 `worklog context`，用卡的 revision 认领，并在工作中更新；不要加 `--session`、`--harness`、
+`--account`，它们默认就是这次启动的身份，而 Skill 示例里写的是 `--harness claude`。Ctrl-C 交给 Agent 而不是启动器；
+Agent 退出或它的终端关闭时，`launch` 会释放它的卡。
+
+**Git worktree。** 项目 Hook 文件不受 Git 跟踪。Codex 按检出加载它们，所以每个 linked worktree 都要单独运行
+`worklog install codex` 并信任该目录。Claude Code 2.1.211 起在 linked worktree 中使用主检出的
+`.claude/settings.local.json`，2.1.277 起也使用它未跟踪的 `.claude/skills`。
+
 ## 不会无限增长的边界
 
 | 对象 | 硬上限 |

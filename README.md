@@ -49,8 +49,9 @@ Hooks still need to be enabled/trusted in the host agent; restart it after insta
 The installer merges only Worklog handlers and removes obsolete Worklog 0.1 handlers.
 It does not rewrite provider credentials, copy transcripts, or create backup histories.
 Use either project-local hooks or the optional native plugin shells, not both.
-Project-local hook files are untracked, so each Git worktree needs its own
-`worklog install` (and, for Codex, its own folder trust); plugin shells apply everywhere.
+Project-local hook files are untracked: Codex needs `worklog install codex` (and folder
+trust) in each Git worktree, while Claude Code 2.1.211+ uses the main checkout's hooks for
+linked worktrees; plugin shells apply everywhere.
 
 An existing 0.1 ledger needs the explicit offline migration below. `init` refuses
 to overwrite it. Do not simply delete the old event files.
@@ -259,6 +260,78 @@ If any config layer sets `sandbox_mode`, Codex ignores `default_permissions` and
 older settings: `writable_roots = ["/path/to/repo/.git/worklog"]` under
 `[sandbox_workspace_write]`, or `codex --add-dir /path/to/repo/.git/worklog` for one
 session. Codex documents both; they were not exercised here.
+
+## Switching accounts or agents
+
+The frontier lives in the project's store, not in any agent's conversation history, so
+work started under one Claude account can continue under another account, in Codex, or
+in another agent. Worklog does not log in, switch accounts or detect an exhausted quota;
+it carries the current card (position, next action, cautions) across the switch. Use
+only your own accounts, within each plan's terms.
+
+**Before switching.**
+
+- The next session starts from the card's last `update` or `checkpoint`. A session out of
+  quota cannot save anything more, and the turn that hit the limit gets no Stop reminder:
+  Claude Code runs `StopFailure`, not `Stop`, when a turn ends on an API error. Edits made
+  since the last update exist only in the working tree, so compare `git status` and
+  `git diff` with the card.
+- End the old session normally (`/exit`; in the Codex app quit or archive the
+  conversation, because switching conversations does not end it). Its SessionEnd hook, or
+  the end of `worklog launch`, releases its card, and a `working` card becomes
+  `needs_check`.
+- If it is still open, or was killed before SessionEnd ran, it still owns the card. Once
+  you have checked it is not mid-turn and nothing it started is still writing, the new
+  session runs `worklog takeover CARD --expect REV --session NEW --confirm-old-writer-stopped`
+  (a refused `claim` prints this command filled in). The old session's later writes to
+  the card are then refused.
+- The CLI needs no model, so once the card is free you can record where things stand
+  from a terminal: `worklog update CARD --expect REV --current '...' --next '...'`.
+
+**Another Claude account.** `/login` inside a session switches it to another account and
+keeps the conversation, but that config directory then holds only the new login. To stay
+signed in to both, give each account its own config directory: each has its own login,
+settings, plugins and session history, so `--continue` and the `--resume` picker do not
+list the other account's conversations. The frontier carries over either way. Unset any
+exported `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN`, which
+outrank the login in every directory.
+
+```sh
+alias claude-b='CLAUDE_CONFIG_DIR=~/.claude-b claude'   # the first run logs in account B
+```
+
+The project hooks and skill from `worklog install claude` apply under every account once
+that account accepts the folder's trust dialog. Native plugin shells are installed per
+config directory; use one kind per project, or both run.
+
+**Codex.** Run `worklog install codex`, trust the project in Codex, restart it, and trust
+the Worklog hooks in `/hooks`. Codex skips new or changed hooks until you do, so repeat
+that after a reinstall changes their command. Its hooks inject the same frontier, and the
+rule in [Codex sandbox](#codex-sandbox) lets its frontier writes leave the sandbox. The
+Codex session claims the card the Claude session released and releases it the same way.
+
+**Any other agent.** An agent that can run shell commands can use the CLI without hooks,
+but nothing then injects the frontier or reminds it to save. Give it the skill: only
+`worklog install claude` and `worklog install codex` write one (to
+`.claude/skills/worklog/SKILL.md` and `.agents/skills/worklog/SKILL.md`, along with that
+harness's hooks), so run one of them and point the agent's instructions file at it. For
+many agents that file is `AGENTS.md`; Gemini CLI reads `GEMINI.md` unless its
+`context.fileName` setting lists `AGENTS.md`. Then start the agent through `launch`:
+
+```sh
+worklog launch --harness gemini --account personal -- gemini
+```
+
+Inside, the agent runs `worklog context`, claims the card with its revision and updates it
+as it works, leaving out `--session`, `--harness` and `--account`: they default to the
+launched identity, while the skill's examples show `--harness claude`. Ctrl-C goes to the
+agent, not the launcher; when the agent exits or its terminal closes, `launch` releases its
+card.
+
+**Git worktrees.** Project hook files are untracked. Codex loads them per checkout, so each
+linked worktree needs its own `worklog install codex` and project trust. Claude Code
+2.1.211+ uses the main checkout's `.claude/settings.local.json` for a linked worktree, and
+2.1.277+ its untracked `.claude/skills` as well.
 
 ## Migrating 0.1 (explicit, offline, destructive to old history)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -222,9 +223,10 @@ def doctor(root: str) -> tuple[dict, int]:
         report["adapters"], adapter_problems = inspect_adapters(ws)
         problems += adapter_problems
         if not report["adapters"]:
-            report["adapter_note"] = ("No project-local Worklog hooks in this checkout. They are untracked files, so "
-                                      "each Git worktree needs its own `worklog install claude|codex`; native plugin "
-                                      "shells, if you use them instead, are not visible here.")
+            report["adapter_note"] = ("No project-local Worklog hooks in this checkout. They are untracked files: Codex "
+                                      "loads them per checkout, so each Git worktree needs its own `worklog install "
+                                      "codex`, while Claude Code 2.1.211+ uses the main checkout's for a linked "
+                                      "worktree. Native plugin shells, if you use them instead, are not visible here.")
     report["problems"] = problems
     report["ok"] = not problems
     for p in problems:
@@ -310,20 +312,35 @@ def run(a) -> tuple[object, int]:
         env = {**os.environ, "WORKLOG_SESSION_ID": sid, "WORKLOG_ACCOUNT": a.account,
                "WORKLOG_HARNESS": a.harness}
         print(w.context(session=sid), file=sys.stderr)
+        proc = None
+        def forward(signum, frame):
+            if proc is not None and proc.poll() is None:
+                proc.send_signal(signum)  # The agent decides how to end; the release follows its exit.
+        # Ctrl-C belongs to the agent (it cancels a turn there), so the launcher only keeps waiting.
+        # A handler rather than SIG_IGN: exec resets handlers, so the agent still gets SIGINT.
+        previous = {s: signal.signal(s, handler) for s, handler in
+                    ((signal.SIGINT, lambda *_: None), (signal.SIGHUP, forward), (signal.SIGTERM, forward))}
         try:
-            code = subprocess.call(argv, cwd=ws.root, env=env)
+            proc = subprocess.Popen(argv, cwd=ws.root, env=env)
+            code = proc.wait()
             return None, code if code >= 0 else 128 - code
         finally:
+            for s, handler in previous.items():
+                signal.signal(s, handler)
             # This identity is never reused, so its card must not keep blocking the checkout.
             try:
                 released = w.release_session(sid)["result"]
             except WorklogError as exc:  # Keep the harness's exit code; a later takeover still works.
-                released = []
-                print(json.dumps({"warning": "release_failed", "message": str(exc)}), file=sys.stderr)
-            if released:
-                print(json.dumps({"released": released, "session_id": sid,
-                                  "note": "working cards are now needs_check"}), file=sys.stderr)
+                released = [exc]
             Runtime(ws).forget(sid)
+            try:  # After a closed terminal, stderr may be gone; the release already happened.
+                if released and isinstance(released[0], WorklogError):
+                    print(json.dumps({"warning": "release_failed", "message": str(released[0])}), file=sys.stderr)
+                elif released:
+                    print(json.dumps({"released": released, "session_id": sid,
+                                      "note": "working cards are now needs_check"}), file=sys.stderr)
+            except OSError:
+                pass
     raise Invalid("Unknown command")
 
 

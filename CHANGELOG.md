@@ -51,6 +51,11 @@ New `worklog reset --discard-current-state --confirm` replaces only a missing or
 unreadable frontier. `install` warns when its interpreter cannot import worklog and notes that each
 Git worktree needs its own install.
 
+`worklog launch` leaves Ctrl-C to the agent (it used to kill it after a quarter second)
+and forwards SIGHUP/SIGTERM, so the card is released when the terminal closes. README and
+the Chinese guide gain "Switching accounts or agents": another Claude account, Codex, or
+any shell-capable agent through `launch`.
+
 ## 0.2.0 — Frontier (breaking)
 
 Replace the event-sourced worklog with one bounded current snapshot. Add GLOBAL

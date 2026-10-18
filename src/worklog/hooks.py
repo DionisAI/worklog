@@ -234,7 +234,9 @@ def install(ws: Workspace, harness: str, *, dry_run: bool = False, uninstall: bo
                 elif uninstall and path.exists() and path.read_bytes() == content:
                     path.unlink()
     note = ("Only Worklog-owned handlers were replaced. No provider credentials copied. Restart/review hook "
-            "trust in your agent. These files are untracked: run install in each Git worktree too.")
+            "trust in your agent. These files are untracked: "
+            + ("Codex loads them per checkout, so run this in each Git worktree too." if harness == "codex" else
+               "Claude Code 2.1.211+ also uses them for linked worktrees of this checkout."))
     if rules_target:
         note += (" The rule lets frontier writes run outside Codex's sandbox, which keeps .git"
                  " read-only; Codex loads it only in a trusted project.")
