@@ -1,6 +1,7 @@
 import json
 import multiprocessing as mp
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -8,11 +9,11 @@ from pathlib import Path
 import pytest
 
 from worklog.core import Worklog
-from worklog.errors import Busy, Conflict, Corruption, Invalid
+from worklog.errors import Busy, Conflict, Corruption, Invalid, ReadOnly
 from worklog.runtime import Runtime
 from worklog.util import canonical, file_lock, revision
 from worklog.workspace import Workspace
-from conftest import signature
+from conftest import needs_file_modes, read_only, signature
 
 
 def _race_claim(root, expected, n, gate, results):
@@ -69,6 +70,52 @@ def test_busy_lock_timeout(w):
         with pytest.raises(Busy):
             with file_lock(w.ws.lock, timeout=0):
                 pass
+
+
+def test_shared_readers_coexist_and_exclude_writers(w):
+    with file_lock(w.ws.lock, shared=True), file_lock(w.ws.lock, shared=True):
+        with pytest.raises(Busy):
+            with file_lock(w.ws.lock, timeout=0):
+                pass
+    with file_lock(w.ws.lock):
+        with pytest.raises(Busy):
+            with file_lock(w.ws.lock, timeout=0, shared=True):
+                pass
+
+
+@needs_file_modes
+def test_read_only_store_reads_but_refuses_writes_by_name(w, card):
+    Runtime(w.ws).update("s", seen=w.read()["revision"])
+    before = signature(w.ws.store)
+    with read_only(w.ws.store):
+        assert w.show("replay") == card
+        assert "Fix replay" in w.context(session="s")
+        assert Runtime(w.ws).get("s")["seen"] == w.read()["revision"]
+        named = re.escape(f"read-only for this process: {w.ws.store} ")
+        with pytest.raises(ReadOnly, match=named):
+            w.update("replay", card["revision"], {"current": "lost"})
+        with pytest.raises(ReadOnly, match=named):
+            Runtime(w.ws).update("s", dirty=True)
+    assert signature(w.ws.store) == before
+
+
+@needs_file_modes
+def test_reader_creates_a_missing_lock_only_where_it_may(w, card):
+    w.ws.lock.unlink()
+    with read_only(w.ws.store):
+        assert w.show("replay") == card  # No writer holds a lock that does not exist.
+    assert not w.ws.lock.exists()
+    assert w.show("replay") == card
+    assert w.ws.lock.exists()
+
+
+def test_reader_refuses_a_symlinked_lock(w, tmp_path):
+    target = tmp_path / "elsewhere"
+    target.write_text("")
+    w.ws.lock.unlink()
+    w.ws.lock.symlink_to(target)
+    with pytest.raises(OSError):
+        w.read()
 
 
 def test_failed_replace_preserves_old_state(w, card, monkeypatch):

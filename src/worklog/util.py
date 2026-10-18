@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -9,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
-from .errors import Busy, Corruption, Invalid
+from .errors import Busy, Corruption, Invalid, ReadOnly
 
 
 def canonical(value: Any) -> bytes:
@@ -58,19 +59,45 @@ def atomic_write(path: Path, data: bytes) -> None:
             tmp.unlink()
 
 
+def _open_lock(path: Path, shared: bool) -> int | None:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if shared:
+        try:
+            return os.open(path, os.O_RDONLY | nofollow)
+        except FileNotFoundError:
+            pass  # Create it below if this process may write here.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return os.open(path, os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        if shared:
+            return None  # No writer holds a lock that does not exist; publication is an atomic rename.
+        raise ReadOnly(f"Worklog store is read-only for this process: {path.parent} ({exc.strerror}). "
+                       "Reads (status, show, context) still work. Run this write where that "
+                       "directory is writable, e.g. outside the agent sandbox, or grant this "
+                       "process write access to it.") from exc
+
+
 @contextlib.contextmanager
-def file_lock(path: Path, timeout: float = 10.0) -> Iterator[None]:
+def file_lock(path: Path, timeout: float = 10.0, *, shared: bool = False) -> Iterator[None]:
+    """Writers take LOCK_EX. shared=True takes LOCK_SH through a read-only descriptor, so
+    reads work where the store is read-only (e.g. .git inside Codex's workspace-write
+    sandbox). Writers publish by atomic rename, so a reader never sees a partial file."""
     try:
         import fcntl
     except ImportError as exc:
         raise Invalid("Worklog requires POSIX flock (macOS/Linux)") from exc
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = _open_lock(path, shared)
+    if fd is None:
+        yield
+        return
     deadline = time.monotonic() + timeout
     try:
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:

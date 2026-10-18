@@ -28,6 +28,12 @@ Python 3.11–3.13 classifiers, and the version single-sourced from `worklog.__v
 CI also gates coverage (subprocesses counted), runs a short soak and smoke-tests the built
 wheel. Generated 0.2.0 evidence moved to `docs/evidence/0.2.0/` and is no longer in the sdist.
 
+Reads (`status`, `show`, `context`, `stats`, `doctor` and the hooks' reads) take a shared
+lock through a read-only descriptor of `worklog.lock`, so they work where the store is
+read-only, such as `.git/worklog` inside Codex's workspace-write sandbox. A write there
+fails with a structured `read_only` error naming the store directory instead of an
+`io_error` (EPERM).
+
 ## 0.2.0 — Frontier (breaking)
 
 Replace the event-sourced worklog with one bounded current snapshot. Add GLOBAL

@@ -32,7 +32,7 @@ class Store:
         return state
 
     def read(self) -> dict:
-        with file_lock(self.ws.lock):
+        with file_lock(self.ws.lock, shared=True):
             return self._load()
 
     def transaction(self, mutate: Callable[[dict], Any]) -> tuple[Any, dict, bool, str]:

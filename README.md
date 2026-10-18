@@ -163,6 +163,9 @@ are fixed-width random values to avoid delete/recreate ABA and counter growth.
 One cooperating writer is allowed per checkout; parallel code writers should use
 separate Git worktrees, which share the same frontier by Git common directory.
 These rules do not prevent arbitrary shell/editor writes outside Worklog.
+Reads take a shared lock through a read-only descriptor, so `status`, `show` and
+`context` also work where the store is read-only, e.g. `.git/worklog` inside Codex's
+workspace-write sandbox; a write there fails with a `read_only` error naming the store.
 
 An ended session releases its card: the `SessionEnd` hook and the end of
 `worklog launch` clear its owner in this checkout and turn `working` into
