@@ -77,6 +77,9 @@ def parser() -> argparse.ArgumentParser:
     overview = sub.add_parser("overview", help="Replace the current workspace overview")
     overview.add_argument("--text", required=True)
     overview.add_argument("--expect", required=True)
+    for c in (add, note, overview):
+        c.add_argument("--session", default=os.environ.get("WORKLOG_SESSION_ID"),
+                       help="Your session, so the hook does not re-send your own write")
     ack = sub.add_parser("ack", help="Clear a disposable hook reminder when nothing materially changed")
     ack.add_argument("--session", default=os.environ.get("WORKLOG_SESSION_ID"))
     clear = sub.add_parser("clear-runtime", help="Discard bounded hook flags, not frontier or owner claims")
@@ -107,10 +110,14 @@ def require_session(a) -> str:
     return a.session
 
 
-def ack_result(ws: Workspace, result: dict, sid: str | None) -> dict:
+def ack_result(ws: Workspace, result: dict, sid: str | None, *, clean: bool = True) -> dict:
     if sid:
+        flags = {"dirty": False} if clean else {}
         try:
-            Runtime(ws).update(sid, dirty=False)
+            # Mark our own write as seen so the next prompt does not re-send it, but only when
+            # nothing before it is unseen: another session's write must still be injected.
+            Runtime(ws).update(sid, seen=result["workspace_revision"],
+                               if_seen=result["previous_workspace_revision"], **flags)
         except WorklogError as exc:
             # A disposable flag failure must not misreport a committed semantic write as failed.
             result["runtime_warning"] = str(exc)
@@ -191,8 +198,9 @@ def run(a) -> tuple[object, int]:
     if a.command == "context":
         return w.context(a.card, session=a.session), 0
     if a.command == "add":
-        return w.add(a.id, a.title, a.current, a.next, cautions=a.caution,
-                     references=a.reference, status=a.status), 0
+        result = w.add(a.id, a.title, a.current, a.next, cautions=a.caution,
+                       references=a.reference, status=a.status)
+        return ack_result(ws, result, a.session, clean=False), 0
     if a.command in {"update", "checkpoint", "handoff"}:
         patch = {k: getattr(a, k) for k in ("title", "current", "next", "status") if getattr(a, k) is not None}
         if a.clear_cautions or a.caution is not None:
@@ -202,16 +210,18 @@ def run(a) -> tuple[object, int]:
         result = w.update(a.id, a.expect, patch, session=a.session, release=a.command == "handoff")
         return ack_result(ws, result, a.session), 0
     if a.command in {"claim", "start", "resume", "takeover"}:
-        return w.claim(a.id, a.expect, session=require_session(a), harness=a.harness,
-                       account=a.account, takeover=a.command == "takeover",
-                       confirmed=getattr(a, "confirm_old_writer_stopped", False)), 0
+        result = w.claim(a.id, a.expect, session=require_session(a), harness=a.harness,
+                         account=a.account, takeover=a.command == "takeover",
+                         confirmed=getattr(a, "confirm_old_writer_stopped", False))
+        return ack_result(ws, result, a.session, clean=False), 0
     if a.command == "finish":
         result = w.finish(a.id, a.expect, session=a.session, confirmed=a.confirm)
         return ack_result(ws, result, a.session), 0
     if a.command == "note":
-        return w.note(a.slot, None if a.clear else a.text, expected=a.expect), 0
+        result = w.note(a.slot, None if a.clear else a.text, expected=a.expect)
+        return ack_result(ws, result, a.session, clean=False), 0
     if a.command == "overview":
-        return w.overview(a.text, expected=a.expect), 0
+        return ack_result(ws, w.overview(a.text, expected=a.expect), a.session, clean=False), 0
     if a.command == "ack":
         Runtime(ws).update(require_session(a), dirty=False)
         return {"acknowledged": True, "frontier_changed": False}, 0
@@ -237,6 +247,15 @@ def run(a) -> tuple[object, int]:
             code = subprocess.call(argv, cwd=ws.root, env=env)
             return None, code if code >= 0 else 128 - code
         finally:
+            # This identity is never reused, so its card must not keep blocking the checkout.
+            try:
+                released = w.release_session(sid)["result"]
+            except WorklogError as exc:  # Keep the harness's exit code; a later takeover still works.
+                released = []
+                print(json.dumps({"warning": "release_failed", "message": str(exc)}), file=sys.stderr)
+            if released:
+                print(json.dumps({"released": released, "session_id": sid,
+                                  "note": "working cards are now needs_check"}), file=sys.stderr)
             Runtime(ws).forget(sid)
     raise Invalid("Unknown command")
 

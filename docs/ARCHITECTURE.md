@@ -32,7 +32,10 @@ session entries. Each contains only `seen` (last injected frontier revision),
 `dirty` (possible unsaved work), and `at` (cache age). Expiry is 24h; LRU eviction
 limits abrupt-session leftovers. SessionEnd removes entries. This cache is neither
 proof that an agent is alive nor authority to acquire/release ownership. It can be
-explicitly cleared without changing a single frontier card.
+explicitly cleared without changing a single frontier card. Each frontier transaction
+also reports the revision it started from; after a CLI write with `--session`, seen
+moves to the new revision only if it equaled that pre-write revision. A session's own
+write is therefore not re-sent, while an unseen write by another session still is.
 
 PreToolUse sets dirty before a known potentially-mutating command, so the CLI's
 own update or ack can clear it before the tool returns. We do not parse arbitrary
@@ -52,9 +55,14 @@ Stop loads the frontier before reminding, so a corrupt store is skipped rather t
 turned into a block. Only normal CLI commands keep exit 2 for structured errors.
 
 SessionStart loads the frontier. UserPromptSubmit compares the current revision
-against seen and injects only on change. Context is admitted whole, not sliced;
-Codex config raises its additionalContextLimit above the bounded output. Host-side
-transport/trust/context behavior is still controlled by the host agent.
+against seen and injects only on change. A render starts with the header, identity,
+claim instruction and a one-line index of every card, sized to fit within the 2,000
+characters Claude Code previews of an over-cap hook context. Card bodies are shown
+whole or not at all. Claude Code caps hook context at 10,000 characters, so a Claude
+render over 9,500 drops the other cards' bodies, then its own, always keeping the
+index, overview and landmarks and pointing to `worklog context --card ID`. Codex
+config raises its additionalContextLimit above the bounded output and gets the full
+render. Host-side transport/trust/context behavior is still controlled by the host agent.
 
 ## Files and cost
 
@@ -80,9 +88,14 @@ There is no OS isolation, distributed lease service, credential management, proc
 supervisor or external-execution idempotency guarantee. An external editor can
 bypass this protocol; a cached old reader must reconcile with code reality.
 
-SessionEnd does not release work because descendants may persist. Handoff explicitly
-releases the owner. Takeover requires fresh CAS and operator confirmation of old
-writer termination. No clock expiry silently steals a checkout. No native session
+SessionEnd, and the end of `worklog launch`, release the ended session's cards in this
+checkout in one transaction: the owner is cleared and working becomes needs_check,
+because descendants may persist and the next claimer must check them. A pinned
+launcher identity outlives Claude's `clear`/`resume` session ends, so its card is
+kept then. Handoff explicitly releases the owner. A crashed session runs no hook, so
+takeover remains: it requires fresh CAS and operator confirmation of old writer
+termination, and a blocked claim names the blocking card and owner and prints the
+exact takeover command. No clock expiry silently steals a checkout. No native session
 history is needed to continue the current card.
 
 After a write was published but its reply was lost, callers must reread. This

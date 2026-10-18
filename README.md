@@ -69,9 +69,15 @@ information remains the agent's responsibility.
 | Events / transcript copies / artifact copies / old frontier backups | **None** |
 
 Oversized updates fail before publication. Unfinished cards and cautions are NOT
-silently evicted. Model context includes the admitted frontier in full, rather
-than chopping off the tail. `worklog context --card ID` focuses detail while
-retaining the other current card/owner index and all three landmarks.
+silently evicted, and no text is chopped off the tail. Every context render starts
+with the header, your session, the claim-before-editing instruction and a one-line
+index of every card (`id | status | owner | title`). `worklog context` and Codex hook
+context then include the admitted frontier in full. Claude Code caps hook context at
+10,000 characters (beyond that it shows a 2,000-character preview), so when the full
+render would exceed ~9,500 characters the Claude hook keeps the index, overview and
+landmarks but only your own card in full, and points to `worklog context --card ID`
+for the rest. `worklog context --card ID` focuses detail on one card while keeping
+the index and all three landmarks.
 
 ## CLI workflow
 
@@ -142,10 +148,16 @@ One cooperating writer is allowed per checkout; parallel code writers should use
 separate Git worktrees, which share the same frontier by Git common directory.
 These rules do not prevent arbitrary shell/editor writes outside Worklog.
 
-A stopped session does not automatically release its card: its subprocesses may
-still be running. After checking the old writer really stopped, a new session may
-use `takeover --confirm-old-writer-stopped` with the current card revision. Worklog
-does not itself prove the process stopped. Inspect actual code and external jobs.
+An ended session releases its card: the `SessionEnd` hook and the end of
+`worklog launch` clear its owner in this checkout and turn `working` into
+`needs_check`, because its subprocesses may still be running and the next claimer
+must check them. A pinned launcher identity (`WORKLOG_SESSION_ID`) keeps its card
+across `/clear` and resume. A crashed session runs no hook, so its card stays owned:
+a blocked claim names the card and owner and prints the exact
+`worklog takeover CARD --expect REV --session YOURS --confirm-old-writer-stopped`
+command (and suggests a separate worktree only inside Git). Run it only after
+checking the old writer really stopped; Worklog does not itself prove that.
+Inspect actual code and external jobs.
 
 Current state is atomically replaced with file/directory fsync. A fixed staging
 filename bounds leftovers even after repeated abrupt process exits. There is no
@@ -155,14 +167,17 @@ before retrying. This is not an exactly-once external execution service.
 
 ## Hooks
 
-`SessionStart` loads current state; `UserPromptSubmit` reinjects it only when its
-revision changed. `PreToolUse` runs only for known potentially mutating tool classes
+`SessionStart` loads current state; `UserPromptSubmit` reinjects it only when it has
+changed since the session last saw it. A CLI write that passes `--session` (claim,
+update, handoff, finish, add, note, overview) counts as seen unless another session
+wrote first, so a session's own write is not sent back to it. `PreToolUse` runs only for known potentially mutating tool classes
 (its `matcher`) and marks a disposable dirty boolean. A `Stop` hook sends one reminder
 per stretch of such tool use and then clears the flag. Potentially mutating tools used
 during that continuation (including the Bash call that reads `worklog status`) flag the
 next turn's Stop. A successful CLI update/handoff/finish clears that reminder;
 `worklog ack --session ID` clears it when nothing materially changed.
-`SessionEnd` deletes the sidecar entry, not the work card. No per-tool command/output
+`SessionEnd` deletes the sidecar entry and releases (never finishes) the session's
+card as described above. No per-tool command/output
 history is stored, and no heartbeat is necessary.
 
 Hooks fail open. Claude Code and Codex read exit code 2 as "block", so `worklog hook`

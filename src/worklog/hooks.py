@@ -21,6 +21,11 @@ MUTATING = {"Edit", "Write", "MultiEdit", "NotebookEdit", "Bash", "PowerShell",
 TOOL_MATCHER = "^(" + "|".join(sorted(MUTATING)) + ")$"
 # Recognize old callbacks as no-ops so reinstalling the adapter is not a replay risk.
 OLD_NOOP_EVENTS = {"PostToolUse", "PreCompact"}
+# Claude Code moves hook context over 10,000 chars to a file, leaving a 2,000-char preview.
+# Codex is configured with additionalContextLimit and keeps the full render.
+CLAUDE_CONTEXT_CHARS = 9500
+# SessionEnd reasons after which the same process (and a pinned identity) keeps working.
+RESTARTS = {"clear", "resume"}
 
 
 def session_id(payload: dict, harness: str, workspace: Workspace, account: str) -> str:
@@ -62,20 +67,23 @@ def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
     account = os.environ.get("WORKLOG_ACCOUNT", "default")
     sid = session_id(payload, harness, ws, account)
     if event == "SessionEnd":
+        # A pinned launcher identity outlives /clear and resume; any other ended identity never
+        # writes again, so its card must not keep blocking the checkout. Release, not finish:
+        # working becomes needs_check because external jobs may still run.
+        if not (sid == os.environ.get("WORKLOG_SESSION_ID") and payload.get("reason") in RESTARTS):
+            worklog.release_session(sid)
         runtime.forget(sid)
-        # No auto-completion/release: ending a session does not stop external jobs.
         return {}
     if event in {"SessionStart", "UserPromptSubmit"}:
         state = worklog.read()
         known = runtime.get(sid)
         if event == "UserPromptSubmit" and known and known["seen"] == state["revision"]:
             return {}
-        context = worklog.context(session=sid)
+        context = worklog.context(session=sid, harness=harness, account=account,
+                                  limit=CLAUDE_CONTEXT_CHARS if harness == "claude" else None)
         # A concurrent write can only cause an extra later injection, not a lost one:
         # seen is the earlier revision, not a second read after rendering.
         runtime.update(sid, seen=state["revision"])
-        context += (f"Harness: {harness}; account alias: {account}. Read the installed Worklog skill.\n"
-                    "Before editing, claim an existing relevant card or add one. Never create a card per session.\n")
         return {"hookSpecificOutput": {"hookEventName": event, "additionalContext": context}}
     if event == "PreToolUse":
         # A boolean only, no commands/transcripts/output retained. CLI update/ack clears it.
@@ -84,9 +92,10 @@ def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
                    if c["owner"] and c["owner"]["checkout_id"] == ws.checkout_id
                    and c["owner"]["session_id"] != sid]
         if foreign:
+            worktree = "; use a separate Git worktree for parallel edits" if ws.git else ""
             return {"hookSpecificOutput": {"hookEventName": event, "additionalContext":
                 "WORKLOG: another cooperating writer owns this checkout (" + ", ".join(foreign) +
-                "). Read status and coordinate; use a separate worktree for parallel edits. This is an advisory, not an OS sandbox."}}
+                f"). Read status and coordinate{worktree}. This is an advisory, not an OS sandbox."}}
         return {}
     if event == "Stop":
         flags = runtime.get(sid)

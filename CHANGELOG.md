@@ -11,6 +11,18 @@ tools. The Stop reminder now fires once per dirty episode. `worklog init` writes
 `.worklog/.gitignore` for plain-directory stores. Rerun `worklog install` and `worklog init`
 (also after `worklog migrate --apply`).
 
+Context starts with the header, session, claim instruction and a one-line index of every
+card. Claude Code caps hook context at 10,000 characters (2,000-character preview beyond
+it), so when the full render exceeds ~9,500 characters the Claude hook keeps the index,
+overview and landmarks but only your own card in full, pointing to `worklog context --card ID`;
+Codex and `worklog context` keep the full render. A CLI write with `--session` (now also
+accepted by `add`, `note`, `overview`) marks its own result as seen unless another session
+wrote first, so the next prompt does not re-send it; receipts gain
+`previous_workspace_revision`. SessionEnd and the end of `worklog launch` release the
+session's card (`working` becomes `needs_check`), except for a pinned identity ending with
+`clear`/`resume`. Claim conflicts name the blocking card and owner and print the exact
+takeover command; a separate worktree is suggested only inside Git.
+
 ## 0.2.0 — Frontier (breaking)
 
 Replace the event-sourced worklog with one bounded current snapshot. Add GLOBAL

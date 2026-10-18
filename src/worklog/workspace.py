@@ -24,6 +24,7 @@ class Workspace:
     store: Path
     workspace_id: str
     name: str
+    git: bool = False  # Inside a Git repository, so linked worktrees share this store.
 
     @property
     def checkout_id(self) -> str:
@@ -115,4 +116,4 @@ class Workspace:
             with file_lock(store / "worklog.lock"):
                 if ignore.is_symlink() or not ignore.exists():
                     atomic_write(ignore, b"*\n")
-        return cls(root, store, config["workspace_id"], config["name"])
+        return cls(root, store, config["workspace_id"], config["name"], git=bool(top))

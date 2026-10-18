@@ -104,8 +104,12 @@ handoff 更新同一张卡并释放负责人，不生成交接档案。接班者
 同一个 checkout 只允许一个协作写入者；并行改代码时使用不同 Git worktree，它们共享 frontier。
 Worklog 不会阻止绕开工具的任意文件修改。
 
-进程结束不等于后台 Job 结束，因此 SessionEnd 不自动释放卡片。确实核对旧写入者已停止后，
-可以用 `takeover CARD --expect CARD_REV --session NEW_SESSION --confirm-old-writer-stopped` 接班。
+Session 结束（SessionEnd Hook 或 `worklog launch` 退出）时，会在一个事务里释放它在本 checkout
+认领的卡：清除负责人，`working` 改为 `needs_check`。进程结束不等于后台 Job 结束，接手者要先核对。
+用 `WORKLOG_SESSION_ID` 固定身份的 launch 会话在 `/clear`、resume 之后保留卡片。
+异常崩溃的会话不会触发 Hook，卡片仍被占用：认领被拒时，错误信息会指出占用的卡与负责人，并给出完整的
+`worklog takeover CARD --expect CARD_REV --session 你的_SESSION --confirm-old-writer-stopped` 命令
+（只有在 Git 仓库里才建议改用独立 worktree）。确实核对旧写入者已停止后再执行。
 它不会替你停止旧进程，也不会自动重启任何任务。
 
 彻底完成并检查未解决事项、外部任务与依赖后：
@@ -134,7 +138,11 @@ worklog note 1 --expect NEW_WORKSPACE_REV --clear
 
 ## 自动 Hook 做什么，不做什么
 
-启动与压缩后读取当前 frontier；后续新消息只有状态有变才重新注入。可能改动文件的工具调用
+启动与压缩后读取当前 frontier；后续新消息只有出现本会话没见过的变化才重新注入。带 `--session` 的
+本会话 CLI 写入（claim/update/handoff/finish/add/note/overview）算作已见，除非在它之前还有其他会话的写入。
+注入内容开头是说明、本会话身份和每张卡一行的索引（id | 状态 | 负责人 | 标题）。Claude Code 的 Hook
+上下文上限是 10,000 字符（超出后只显示前 2,000 字符预览）：完整内容超过约 9,500 字符时，只完整显示你自己的卡，
+保留索引、概览和历史节点，其他卡用 `worklog context --card ID` 查看。Codex 与 `worklog context` 仍是完整内容。可能改动文件的工具调用
 只设置一个临时 dirty 布尔值，不记录命令、回复或完整工具输出；其他工具不会触发 Hook。
 每段可能改动文件的工具使用之后，Stop 最多提醒一次并清除标记；续写期间若再调用可能改动文件的工具
 （包括用 Bash 读取 `worklog status`）且未执行 update/ack，下一轮 Stop 仍会提醒。

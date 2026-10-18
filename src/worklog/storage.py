@@ -35,14 +35,16 @@ class Store:
         with file_lock(self.ws.lock):
             return self._load()
 
-    def transaction(self, mutate: Callable[[dict], Any]) -> tuple[Any, dict, bool]:
+    def transaction(self, mutate: Callable[[dict], Any]) -> tuple[Any, dict, bool, str]:
+        """Returns (result, state, changed, pre-write revision); the last lets a caller
+        tell its own write apart from writes it has not seen."""
         with file_lock(self.ws.lock):
             before = self._load()
             after = copy.deepcopy(before)
             result = mutate(after)
             if before == after:
-                return copy.deepcopy(result), before, False
+                return copy.deepcopy(result), before, False, before["revision"]
             after["revision"] = revision()
             raw = envelope(after)  # Validate before touching the current snapshot.
             atomic_write(self.path, raw)
-            return copy.deepcopy(result), after, True
+            return copy.deepcopy(result), after, True, before["revision"]

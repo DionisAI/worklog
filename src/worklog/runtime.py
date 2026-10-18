@@ -52,12 +52,15 @@ class Runtime:
                 return entry
             return None
 
-    def update(self, sid: str, **patch) -> None:
+    def update(self, sid: str, *, if_seen: str | None = None, **patch) -> None:
+        """With if_seen, seen is set only if it currently equals if_seen."""
         identifier(sid, "session_id")
         if set(patch) - {"seen", "dirty"}:
             raise Invalid("Runtime accepts only seen/dirty flags")
         if "seen" in patch and patch["seen"] is not None:
             token(patch["seen"])
+        if if_seen is not None:
+            token(if_seen)
         if "dirty" in patch and type(patch["dirty"]) is not bool:
             raise Invalid("dirty must be boolean")
         with file_lock(self.ws.lock):
@@ -69,6 +72,10 @@ class Runtime:
                                  if now - val["at"] < RUNTIME_TTL_SECONDS}
             sessions = state["sessions"]
             old = sessions.get(sid)
+            if if_seen is not None and (not old or old["seen"] != if_seen):
+                patch.pop("seen", None)  # A write this session never saw must still be injected.
+            if not patch:
+                return
             values = {"seen": None, "dirty": False, **(old or {}), **patch}
             # Same flags within a minute are a no-op, including mtime.
             if old and {k: values[k] for k in ("seen", "dirty")} == {k: old[k] for k in ("seen", "dirty")} and now - old["at"] < 60:

@@ -1,7 +1,9 @@
+import dataclasses
 import json
 
 import pytest
 
+from worklog.core import Worklog
 from worklog.errors import Capacity, Conflict, Invalid, NotFound
 from worklog.model import envelope
 from conftest import signature
@@ -204,12 +206,47 @@ def test_takeover_not_automatic(w, card):
         w.update("replay", c["revision"], {"next": "steal back"}, session="first")
 
 
+def test_claim_conflicts_name_the_blocker_and_the_exact_takeover(w, card):
+    c = w.claim("replay", card["revision"], session="crashed", harness="claude")["card"]
+    takeover = f"worklog takeover replay --expect {c['revision']} --session newer --confirm-old-writer-stopped"
+    with pytest.raises(Conflict) as exc:
+        w.claim("replay", c["revision"], session="newer")
+    assert "session crashed (claude, this checkout)" in str(exc.value) and takeover in str(exc.value)
+    other = w.add("other", "Other", "Current", "Next")["card"]
+    with pytest.raises(Conflict) as exc:
+        w.claim("other", other["revision"], session="newer")  # the checkout, not the card, is taken
+    assert "Card replay is owned by session crashed" in str(exc.value) and takeover in str(exc.value)
+    assert "worktree" not in str(exc.value)  # a plain directory has no worktrees to suggest
+    with pytest.raises(Conflict) as exc:
+        w.claim("other", other["revision"], session="crashed")
+    assert f"worklog handoff replay --expect {c['revision']} --session crashed" in str(exc.value)
+    taken = w.claim("replay", c["revision"], session="newer", takeover=True, confirmed=True)["card"]
+    assert taken["owner"]["session_id"] == "newer" and taken["status"] == "needs_check"
+
+
+def test_release_session_frees_only_its_cards_in_this_checkout(w, card):
+    linked = Worklog(dataclasses.replace(w.ws, root=w.ws.root / "linked"))
+    c = linked.claim("replay", card["revision"], session="ended")["card"]
+    alive = w.add("alive", "Alive", "Current", "Next")["card"]
+    w.claim("alive", alive["revision"], session="alive")
+    w.update("alive", w.show("alive")["revision"], {"status": "waiting"}, session="alive")
+    before = signature(w.ws.store)
+    assert w.release_session("ended")["result"] == [] and signature(w.ws.store) == before
+    assert linked.release_session("ended")["result"] == ["replay"]
+    released = w.show("replay")
+    assert released["owner"] is None and released["status"] == "needs_check"
+    assert released["current"] == c["current"] and released["revision"] != c["revision"]
+    assert w.show("alive")["owner"]["session_id"] == "alive"
+    assert w.release_session("alive")["result"] == ["alive"]
+    assert w.show("alive")["owner"] is None and w.show("alive")["status"] == "waiting"
+
+
 def test_focus_context_keeps_all_owner_summaries_and_notes(w, card):
     w.note("3", "Critical old lesson", expected=w.read()["revision"])
     w.add("another", "Other module", "Blocked", "Ask for input")
     ctx = w.context("replay")
-    assert "Critical old lesson" in ctx and "Other card another" in ctx
-    assert "Located duplicate counting" in ctx
+    assert "Critical old lesson" in ctx and "\n- another | ready | free | Other module\n" in ctx
+    assert "Located duplicate counting" in ctx and "### another" not in ctx
 
 
 def test_overview_replaces_and_clears(w):

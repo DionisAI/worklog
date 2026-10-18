@@ -10,7 +10,7 @@ import pytest
 from worklog.core import Worklog
 from worklog.errors import Busy, Conflict, Corruption, Invalid
 from worklog.runtime import Runtime
-from worklog.util import canonical, file_lock
+from worklog.util import canonical, file_lock, revision
 from worklog.workspace import Workspace
 from conftest import signature
 
@@ -204,6 +204,18 @@ def test_runtime_expiration_prunes_flags_not_frontier(w, card):
     assert w.show("replay") == card
 
 
+def test_runtime_seen_advances_only_from_the_expected_revision(w):
+    r = Runtime(w.ws, clock=lambda: 100.0)
+    a, b, c = revision(), revision(), revision()
+    r.update("never_injected", seen=b, if_seen=a)
+    assert not r.path.exists()  # no entry, nothing seen: no write and no seen invented
+    r.update("s", seen=a)
+    r.update("s", seen=c, if_seen=b)  # an unseen write happened in between: keep seen
+    assert r.get("s")["seen"] == a
+    r.update("s", seen=b, if_seen=a, dirty=True)
+    assert r.get("s") == {"seen": b, "dirty": True, "at": 100.0}
+
+
 def test_runtime_end_deletes_not_archives(w):
     r = Runtime(w.ws)
     r.update("ending", dirty=True)
@@ -247,6 +259,16 @@ def test_git_worktrees_share_frontier_but_separate_owners(tmp_path):
     assert a.read() == b.read()
     with pytest.raises(Conflict):
         b.update("a", a.show("a")["revision"], {"next": "wrong checkout"}, session="a_session")
+
+
+def test_checkout_conflict_suggests_a_worktree_only_inside_git(tmp_path):
+    subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True, env=git_env())
+    w = Worklog(Workspace.open(tmp_path, create=True))
+    a, b = (w.add(cid, "T", "C", "N")["card"] for cid in ("a", "b"))
+    w.claim("a", a["revision"], session="first")
+    with pytest.raises(Conflict, match="separate Git worktree") as exc:
+        w.claim("b", b["revision"], session="second")
+    assert "worklog takeover a --expect" in str(exc.value)
 
 
 def test_open_nested_plain_workspace(w):

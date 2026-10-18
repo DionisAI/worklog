@@ -12,13 +12,16 @@ logs/archives/backups next to it.
 ## Read and continue
 
 At session start or after compaction, read `worklog context` (a hook may already
-provide it). This read does not write any semantic state. A frontier card is a
+provide it). It starts with a one-line index of every card. Under Claude Code's hook
+size cap it may show only your own card in full; read another with
+`worklog context --card ID`. This read does not write any semantic state. A frontier card is a
 workline, NOT a session. Continue a relevant existing card. Do not create a card
 for every user message/session/account switch. Do not create cards for unrelated
 conversation that is not workspace work.
 
 Use the session ID injected by the hook or WORKLOG_SESSION_ID; never guess another
-session's ID. Add `--session ID` to owned CLI writes when the environment lacks it.
+session's ID. Add `--session ID` to your CLI writes (add and note too) when the
+environment lacks it; it also keeps the hook from re-sending your own changes.
 A launcher provides the identity: `worklog launch --harness claude --account a -- claude`.
 An account is an alias; Worklog does not sign in or copy credentials.
 
@@ -26,9 +29,11 @@ Before code edits, `worklog claim CARD --expect CARD_REV --session ID --harness 
 For new work: `worklog add short-id --title '...' --current '...' --next '...'`, then
 claim it. One cooperating writer per checkout. For parallel code edits, use
 separate Git worktrees sharing this frontier. This is coordination, not a sandbox.
-Do not steal an existing owner's work. `takeover` requires a fresh revision and
-explicit confirmation that the old writer has stopped; then inspect real code
-and external jobs. Session end does not imply that descendants stopped.
+Do not steal an existing owner's work. A blocked claim names the owner and prints
+the exact `takeover` command; run it only after confirming the old writer has
+stopped, then inspect real code and external jobs. Ending a session releases its
+card as `needs_check` (a launched session keeps it across /clear and resume). That
+does not mean its jobs stopped: whoever claims a `needs_check` card checks them first.
 
 ## Replace current state at meaningful progress
 
