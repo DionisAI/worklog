@@ -221,7 +221,7 @@ worklog doctor
 # 源码包内
 python -m pytest -q
 PYTHONPATH=src python examples/demo.py
-PYTHONPATH=src python tools/soak.py --iterations 10000 --output docs/soak-result.json
+PYTHONPATH=src python tools/soak.py --iterations 10000
 ```
 
 测试结果、实际执行平台与未实测部分以附带 TEST_REPORT.md 为准。

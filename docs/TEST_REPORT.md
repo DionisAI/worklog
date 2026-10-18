@@ -1,6 +1,22 @@
 # Worklog Frontier v0.2.0 — 测试与交付验证
 
-日期：2026-10-16。以下为实际执行结果，不是计划中的测试。
+日期：2026-10-16。以下为实际执行结果，不是计划中的测试。英文摘要见 [TEST_SUMMARY.md](TEST_SUMMARY.md)。
+
+## 2026-10-18 更新
+
+"完整测试"及之后各章是 0.2.0（2026-10-16）的原始记录。此后已合入 Hook 失效开放、
+上下文预算、会话结束释放卡片等改动。当前情况：
+
+- GitHub Actions（`.github/workflows/ci.yml`）在 ubuntu-latest 与 macos-latest ×
+  Python 3.11 / 3.12 / 3.13 上运行。2026-10-18 在 main（`cdf6c44`）上的首次运行六项全部通过
+  （197 项 pytest + demo）。
+- CI 每项另外执行：统计子进程的覆盖率（门槛 90%）、1,000 轮 `tools/soak.py`、
+  构建 wheel 并运行 `tools/smoke_release.py --wheel`（不含 v0.1 迁移部分）。
+- 覆盖率现在把 CLI/Hook 子进程计算在内（`[tool.coverage.run] patch = ["subprocess"]`）。
+  2026-10-18 本地 macOS（Apple Silicon）上 Python 3.11 / 3.12 / 3.13 多次运行实测 91.29%–91.38%
+  （1,160 条语句），cli.py 89%；不统计子进程时 cli.py 约 65%（0.2.0 记录为 57%）。
+- 普通目录 store（`.worklog/`）现在带有固定的 `.gitignore`（内容为 `*`），所以当前 soak 统计
+  5 个文件（4 个核心文件 + `.gitignore`），`tools/soak.py` 也按 5 断言；下表中的"4"是 0.2.0 的值。
 
 ## 完整测试
 
@@ -12,7 +28,7 @@
 
 ```sh
 python -m pytest -q --cov=worklog --cov-report=term \
-  --cov-report=json:docs/coverage.json --junitxml=docs/test-results.xml
+  --cov-report=json:docs/evidence/0.2.0/coverage.json --junitxml=docs/evidence/0.2.0/test-results.xml
 python -m compileall -q src tests tools examples
 ```
 
@@ -76,25 +92,29 @@ Hook 去重/一次提醒/子 Agent 身份分离、配置合并与旧回调清理
 ```sh
 python tools/smoke_release.py \
   --wheel /path/to/workspace_worklog-0.2.0-py3-none-any.whl \
-  --legacy-wheel /path/to/workspace_worklog-0.1.0-py3-none-any.whl \
-  --output docs/release-smoke.json
+  --legacy-wheel /path/to/workspace_worklog-0.1.0-py3-none-any.whl
 ```
 
 旧版 wheel 不随新版源码包重复打包；测试新版独立安装时可省略 --legacy-wheel。
 
 ## 未声称完成的验证
 
-未在 macOS 实机、Python 3.11/3.12、Windows、网络文件系统或真实断电情境下测试。
-未实际运行远端 GitHub CI；附带矩阵只是配置。未通过真实登录的 Claude/Codex UI
+未在 Windows、网络文件系统或真实断电情境下测试。未通过真实登录的 Claude/Codex UI
 完整运行工作会话；也未把原生插件发布到任何 marketplace。
+0.2.0 记录中的"未在 macOS 实机、Python 3.11/3.12 上测试"和"未实际运行远端 GitHub CI"
+已不再成立：2026-10-18 起 CI 在 macOS 与 Linux 上覆盖 Python 3.11–3.13 并全部通过（见上方更新）。
 
 这不是任务审计平台、操作系统沙箱或自动验收器。语义更新仍需 Agent 使用 Skill/CLI；
 硬性规则保证的是当前数据的边界，不保证模型永远选择正确的三个教训。
 
 ## 原始记录
 
-源码包 docs/ 中包含：pytest-output.txt、test-results.xml、coverage.json、soak-result.json、
-soak-console.txt、release-smoke.json、verification-summary.json、runtime-source-checksums.json。
-逐项比对后确认 wheel 内运行时代码与本次测试的源代码/Skill 完全相同。
+0.2.0 运行生成的文件在仓库 `docs/evidence/0.2.0/` 中：pytest-output.txt、test-results.xml、
+coverage.json、soak-result.json、release-smoke.json、demo-output.txt、verification-summary.json、
+runtime-source-checksums.json。源码包不再打包这些文件。原有的 soak-console.txt 与
+soak-result.json 内容重复，wheel-build.txt 含构建沙箱路径，两者已删除。
 
-wheel SHA-256：`0ac85e927ad197fa39405cabf79c3934ae90c45fc2fcaad6efc17a39026e1ab7`。
+当时逐项比对，wheel 内运行时代码与该次测试的源代码/Skill 相同（runtime-source-checksums.json）；
+此后的提交已修改这些源码。wheel 不能逐字节复现（zip 内记录构建时的文件时间，同一源码连续构建两次
+SHA-256 不同），因此不再给出 wheel SHA-256；verification-summary.json 中的 `wheel_sha256`
+只是当次构建的记录，无法用于复核。

@@ -11,7 +11,8 @@
   progress since the last update. The Stop reminder is conservative, one-shot,
   and not a proof of compliance. External/custom tools may not be recognized.
 - Python 3.11+ is targeted; POSIX/macOS/Linux are supported by design. Actual test
-  environments and integration limitations are in TEST_REPORT.md. Windows,
+  environments and integration limitations are in TEST_SUMMARY.md (English) and
+  TEST_REPORT.md (Chinese). Windows,
   network filesystems, cross-host synchronization and hostile agents are not
   validated. Do not put this live store in bidirectional file sync.
 - File locks protect cooperating local Worklog calls, not arbitrary filesystem

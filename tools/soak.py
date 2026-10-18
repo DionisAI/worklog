@@ -1,6 +1,6 @@
 """Accelerated boundedness test. Uses real atomic writes in a temporary workspace.
 
-Run: PYTHONPATH=src python tools/soak.py --iterations 10000 --output docs/soak-result.json
+Run: PYTHONPATH=src python tools/soak.py --iterations 10000
 No models/provider accounts are called. Not a real-time months-long soak.
 """
 from __future__ import annotations

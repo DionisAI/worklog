@@ -5,7 +5,23 @@ landmarks for the entire workspace. Nothing else becomes a growing work history.
 
 This is a deliberately smaller replacement for Worklog 0.1, not log compaction
 bolted onto its event ledger. Local-first Python 3.11+, standard library only.
-macOS/Linux design; see the test report for actually exercised environments.
+macOS/Linux design; CI runs on both with Python 3.11–3.13 (see the
+[test summary](docs/TEST_SUMMARY.md)).
+
+## Quick start
+
+```sh
+uv tool install --force .          # or: python -m pip install .
+cd /path/to/project
+worklog init
+worklog install claude             # and/or: worklog install codex; then restart the agent
+worklog add login --title 'Fix login redirect' \
+  --current 'Reproduced the loop; cause unknown' --next 'Read the auth middleware'
+worklog context                    # what a new session is shown at SessionStart
+```
+
+Agents then claim, update, hand off and finish that card through the skill that
+`worklog install` adds; the sections below cover each step.
 
 ## Install
 
@@ -229,8 +245,9 @@ worklog context
 worklog stats
 worklog doctor
 PYTHONPATH=src python examples/demo.py
-python -m pytest -q
-PYTHONPATH=src python tools/soak.py --iterations 10000 --output docs/soak-result.json
+python -m pip install -e '.[dev]'
+python -m pytest -q --cov        # coverage also counts CLI/hook subprocesses
+PYTHONPATH=src python tools/soak.py --iterations 10000
 ```
 
 Git repositories store state in `<git-common-dir>/worklog/`; plain directories
@@ -245,6 +262,7 @@ Git history, user-exported files, and referenced external test/job logs are not
 controlled by this tool. Do not commit generated frontier snapshots on every update.
 
 See [Chinese guide](docs/USAGE.zh-CN.md), [architecture](docs/ARCHITECTURE.md),
-[test report](docs/TEST_REPORT.md), [limits](docs/LIMITATIONS.md), and
+[test summary](docs/TEST_SUMMARY.md) (full report in Chinese: [TEST_REPORT.md](docs/TEST_REPORT.md)),
+[limits](docs/LIMITATIONS.md), and
 [hook sources](docs/SOURCES.md). This is a breaking 0.2 release, not a compatible
 replacement for 0.1 event/verify/job commands.

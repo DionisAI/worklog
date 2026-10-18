@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,12 @@ def execute(argv, *, cwd, env, input=None, expected=0):
     return p
 
 
+def source_version(source_root: Path) -> str:
+    """The single-sourced worklog.__version__, read without importing the source tree."""
+    text = (source_root / "src/worklog/__init__.py").read_text()
+    return re.search(r'^__version__ = "([^"]+)"$', text, re.M).group(1)
+
+
 def run(wheel: Path, legacy_wheel: Path | None = None) -> dict:
     source_root = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix="worklog-release-smoke-") as tmp:
@@ -29,7 +36,7 @@ def run(wheel: Path, legacy_wheel: Path | None = None) -> dict:
         python, cli = venv / "bin/python", venv / "bin/worklog"
         execute([python, "-m", "pip", "install", "--no-index", "--no-deps", wheel], cwd=tmp, env=env)
         version = execute([cli, "--version"], cwd=tmp, env=env).stdout.strip()
-        assert version == "0.2.0"
+        assert version == source_version(source_root), version
         origin = execute([python, "-c", "import worklog; print(worklog.__file__)"], cwd=tmp, env=env).stdout.strip()
         assert str(venv) in origin and "site-packages" in origin
         root = tmp / "project"

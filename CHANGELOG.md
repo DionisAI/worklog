@@ -23,6 +23,11 @@ session's card (`working` becomes `needs_check`), except for a pinned identity e
 `clear`/`resume`. Claim conflicts name the blocking card and owner and print the exact
 takeover command; a separate worktree is suggested only inside Git.
 
+Packaging: SPDX `license = "MIT"` with `license-files` (build needs setuptools>=77),
+Python 3.11–3.13 classifiers, and the version single-sourced from `worklog.__version__`.
+CI also gates coverage (subprocesses counted), runs a short soak and smoke-tests the built
+wheel. Generated 0.2.0 evidence moved to `docs/evidence/0.2.0/` and is no longer in the sdist.
+
 ## 0.2.0 — Frontier (breaking)
 
 Replace the event-sourced worklog with one bounded current snapshot. Add GLOBAL
