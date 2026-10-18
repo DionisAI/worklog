@@ -37,6 +37,20 @@ runs the frontier writes outside Codex's sandbox in a trusted project (`uninstal
 it unless edited). The Stop reminder and skill tell the agent to report a `read_only`
 write instead of retrying. Rerun `worklog install codex`.
 
+Checkout IDs no longer hash the absolute path: they combine the workspace ID with "main"
+(also used by a plain directory, so a later `git init` keeps it) or the linked worktree's
+admin name, so moving or renaming a checkout keeps the checkout part of its owners valid;
+a pointer-redirected store keeps path-based IDs, and owners under the old ID still count
+as this checkout. Unpinned hook session IDs still include the path (unchanged by
+upgrading), so after a move only a pinned `WORKLOG_SESSION_ID` keeps writing its card. Subagents share their
+parent's hook identity (no false foreign-writer advisory, no runtime-cache churn); session
+IDs are otherwise unchanged. `worklog doctor` now reports store, runtime and hook-adapter
+problems (missing/duplicate/outdated hooks, an interpreter that cannot import worklog,
+a stale skill) with a fix for each, and `worklog init` fails on an unreadable frontier.
+New `worklog reset --discard-current-state --confirm` replaces only a missing or
+unreadable frontier. `install` warns when its interpreter cannot import worklog and notes that each
+Git worktree needs its own install.
+
 ## 0.2.0 — Frontier (breaking)
 
 Replace the event-sourced worklog with one bounded current snapshot. Add GLOBAL

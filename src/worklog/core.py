@@ -41,14 +41,14 @@ class Worklog:
         if owner:
             if owner["session_id"] != session:
                 raise Conflict("Another session owns this card. Ask for a handoff or explicitly take over after checking the old writer.")
-            if owner["checkout_id"] != self.ws.checkout_id:
+            if not self.ws.is_checkout(owner["checkout_id"]):
                 raise Conflict("Owner belongs to another checkout. Read it there or hand it off first.")
         if session is not None:
             identifier(session, "session_id")
 
     def _takeover_hint(self, card: dict, session: str) -> str:
         owner = card["owner"]
-        where = "this checkout" if owner["checkout_id"] == self.ws.checkout_id else "checkout " + owner["checkout_id"]
+        where = "this checkout" if self.ws.is_checkout(owner["checkout_id"]) else "checkout " + owner["checkout_id"]
         return (f"Card {card['id']} is owned by session {owner['session_id']} ({owner['harness']}, {where}). "
                 "Ask it to hand off. Only if that writer has stopped (check its processes and jobs): "
                 f"`worklog takeover {card['id']} --expect {card['revision']} --session {session} "
@@ -117,7 +117,16 @@ class Worklog:
             card = self._get(s, card_id, expected)
             new_owner = {"session_id": session, "harness": harness, "account": account,
                          "checkout_id": self.ws.checkout_id}
-            if card["owner"] == new_owner:
+            owner = card["owner"]
+            if owner and owner["session_id"] == session and self.ws.is_checkout(owner["checkout_id"]):
+                # The same writer re-claiming: refresh its labels and an old path-based checkout id,
+                # unless another card's owner already holds the new id (one writer per checkout).
+                if any(c["owner"] and c["id"] != card_id and c["owner"]["checkout_id"] == new_owner["checkout_id"]
+                       for c in s["cards"].values()):
+                    new_owner["checkout_id"] = owner["checkout_id"]
+                if owner != new_owner:
+                    card["owner"] = new_owner
+                    card["revision"] = revision()
                 return card_id
             if card["owner"] and not takeover:
                 raise Conflict("Card already has an owner; use handoff, not an automatic steal. "
@@ -130,7 +139,7 @@ class Worklog:
                     raise Conflict(f"One current card per session: you already own {other['id']}. Release it first "
                                    f"(add --current/--next to record where it stands): `worklog handoff {other['id']} "
                                    f"--expect {other['revision']} --session {session}`.")
-                if owner["checkout_id"] == self.ws.checkout_id:
+                if self.ws.is_checkout(owner["checkout_id"]):
                     # Worktrees share the store only inside Git; elsewhere there is no parallel checkout.
                     worktree = " Or claim from a separate Git worktree, which shares this frontier." if self.ws.git else ""
                     raise Conflict(f"One writer per checkout. {self._takeover_hint(other, session)} "
@@ -161,7 +170,7 @@ class Worklog:
             released = []
             for cid, card in sorted(s["cards"].items()):
                 owner = card["owner"]
-                if owner and owner["session_id"] == session and owner["checkout_id"] == self.ws.checkout_id:
+                if owner and owner["session_id"] == session and self.ws.is_checkout(owner["checkout_id"]):
                     card["owner"] = None
                     if card["status"] == "working":
                         card["status"] = "needs_check"
@@ -169,6 +178,11 @@ class Worklog:
                     released.append(cid)
             return released
         return self._receipt(self.store.transaction(change))
+
+    def reset(self) -> dict:
+        state = self.store.reset_unreadable()
+        return {"reset": True, "workspace_revision": state["revision"], "store": str(self.ws.store),
+                "note": "The unreadable frontier's cards and landmarks are gone; nothing was archived."}
 
     def note(self, slot: str, value: str | None, *, expected: str) -> dict:
         if slot not in SLOTS:

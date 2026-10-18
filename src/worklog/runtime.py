@@ -25,10 +25,10 @@ class Runtime:
             return {"schema_version": 1, "sessions": {}}
         raw = load_json(self.path, MAX_RUNTIME_BYTES)
         if not isinstance(raw, dict) or set(raw) != {"schema_version", "sessions"} or type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
-            raise Corruption("Invalid runtime cache; `worklog clear-runtime --confirm` can discard it")
+            raise Corruption(f"Invalid runtime cache {self.path}; `worklog clear-runtime --confirm` can discard it")
         sessions = raw["sessions"]
         if not isinstance(sessions, dict) or len(sessions) > MAX_SESSIONS:
-            raise Corruption("Runtime session bound exceeded")
+            raise Corruption(f"Runtime session bound exceeded: {self.path}")
         try:
             for sid, entry in sessions.items():
                 identifier(sid)
@@ -41,7 +41,7 @@ class Runtime:
                 if type(entry["at"]) not in (int, float) or not math.isfinite(entry["at"]):
                     raise Invalid("Invalid runtime timestamp")
         except Invalid as exc:
-            raise Corruption(f"Invalid runtime cache: {exc}") from exc
+            raise Corruption(f"Invalid runtime cache {self.path}: {exc}") from exc
         return raw
 
     def get(self, sid: str) -> dict | None:
@@ -87,7 +87,7 @@ class Runtime:
             sessions[sid] = values
             raw = canonical(state) + b"\n"
             if len(raw) > MAX_RUNTIME_BYTES:
-                raise Corruption("Runtime cache exceeded its fixed budget")
+                raise Corruption(f"Runtime cache exceeded its fixed budget: {self.path}")
             if before != canonical(state):
                 atomic_write(self.path, raw)
 

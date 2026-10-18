@@ -26,7 +26,9 @@ Finish removes the current card. Landmark replacement removes the replaced text.
 No deleted item is written elsewhere. There is no authoritative audit/event chain,
 artifact cache, embedding store, native transcript reader, Markdown shadow state,
 or rolling sequence of recovery snapshots. On-disk corruption fails closed instead
-of fabricating an empty project. This intentionally trades historical recovery for
+of fabricating an empty project; only the operator-confirmed `worklog reset
+--discard-current-state --confirm` replaces a missing or unreadable frontier, and
+`worklog doctor` names each broken file with its fix. This intentionally trades historical recovery for
 a smaller current-state-only product.
 
 ## Disposable hooks
@@ -88,6 +90,15 @@ per-session output and not a frontier history.
 Owner information lives only on a current card: session, harness, account alias,
 checkout ID. Card ownership and one-writer-per-checkout are atomically checked.
 Independent Git worktrees use distinct checkout IDs and a shared common-dir store.
+A checkout ID hashes the workspace ID with "main" (a plain directory uses it too, so a
+later `git init` keeps it) or the linked worktree's admin name, so it survives moving or
+renaming the checkout; a store redirected by a pointer keeps path-based IDs. Git reuses
+an admin name freed by `worktree remove`/`prune`, so a re-added worktree with the same
+basename inherits that checkout ID (as a re-added path did before). Owners recorded under
+the older path-based ID still count as this checkout, and re-claiming refreshes them.
+Hook session IDs keep their old, path-based formula, so an unpinned session gets a new ID
+after a move; subagents share their parent's ID, so they neither trip the foreign-writer
+advisory nor fill the runtime cache.
 There is no OS isolation, distributed lease service, credential management, process
 supervisor or external-execution idempotency guarantee. An external editor can
 bypass this protocol; a cached old reader must reconcile with code reality.

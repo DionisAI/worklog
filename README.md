@@ -49,6 +49,8 @@ Hooks still need to be enabled/trusted in the host agent; restart it after insta
 The installer merges only Worklog handlers and removes obsolete Worklog 0.1 handlers.
 It does not rewrite provider credentials, copy transcripts, or create backup histories.
 Use either project-local hooks or the optional native plugin shells, not both.
+Project-local hook files are untracked, so each Git worktree needs its own
+`worklog install` (and, for Codex, its own folder trust); plugin shells apply everywhere.
 
 An existing 0.1 ledger needs the explicit offline migration below. `init` refuses
 to overwrite it. Do not simply delete the old event files.
@@ -162,6 +164,12 @@ prevents lost updates; unrelated cards can update independently. Revision tokens
 are fixed-width random values to avoid delete/recreate ABA and counter growth.
 One cooperating writer is allowed per checkout; parallel code writers should use
 separate Git worktrees, which share the same frontier by Git common directory.
+A checkout is identified by the workspace plus which checkout it is (main, which a plain
+directory also counts as, or a linked worktree's admin name), so moving or renaming it, or
+running `git init` in a plain directory, keeps the checkout part of its owners valid. Hook
+session IDs still include the path, so after a move only a pinned `WORKLOG_SESSION_ID`
+(`worklog launch`) keeps writing its card; others take it over. Subagents share their
+parent session's identity.
 These rules do not prevent arbitrary shell/editor writes outside Worklog.
 Reads take a shared lock through a read-only descriptor, so `status`, `show` and
 `context` also work where the store is read-only, e.g. `.git/worklog` inside Codex's
@@ -180,7 +188,7 @@ Inspect actual code and external jobs.
 
 Current state is atomically replaced with file/directory fsync. A fixed staging
 filename bounds leftovers even after repeated abrupt process exits. There is no
-old snapshot backup. Corruption is reported, not converted into an empty workspace.
+old snapshot backup. Corruption is reported, never silently converted into an empty workspace.
 If the response is lost or fsync reports an error after publication, re-read state
 before retrying. This is not an exactly-once external execution service.
 
@@ -284,7 +292,7 @@ Disable an old native plugin if you switch to project-local installation.
 worklog status
 worklog context
 worklog stats
-worklog doctor
+worklog doctor   # store, runtime cache and this checkout's hooks, each problem with a fix
 PYTHONPATH=src python examples/demo.py
 python -m pip install -e '.[dev]'
 python -m pytest -q --cov        # coverage also counts CLI/hook subprocesses
@@ -297,6 +305,10 @@ use `.worklog/`, which `worklog init` marks with a fixed `.gitignore` (`*`) so a
 Core files are `workspace.json`, `frontier.json`, `worklog.lock`,
 and the optional `runtime.json`. Context reads do not modify file bytes or mtimes.
 No default on-disk Markdown projection duplicates old frontier content.
+If `frontier.json` becomes unreadable (for example a merge conflict), `worklog doctor`
+names it and the fix: restore a good copy, or run
+`worklog reset --discard-current-state --confirm`, which replaces only a missing or
+unreadable frontier with an empty one in the same workspace (its cards and landmarks are lost).
 
 The bounds cover **Worklog-owned runtime storage**. Provider-native transcripts,
 Git history, user-exported files, and referenced external test/job logs are not
