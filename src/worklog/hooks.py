@@ -26,6 +26,29 @@ OLD_NOOP_EVENTS = {"PostToolUse", "PreCompact"}
 CLAUDE_CONTEXT_CHARS = 9500
 # SessionEnd reasons after which the same process (and a pinned identity) keeps working.
 RESTARTS = {"clear", "resume"}
+# Frontier writes, which touch only the store. Not launch (runs any command), install,
+# uninstall, init, migrate, hook or clear-runtime; a `--root` form does not match either.
+CODEX_ALLOWED = ("add", "update", "checkpoint", "handoff", "claim", "start", "resume",
+                 "takeover", "finish", "note", "overview", "ack")
+
+
+def codex_rules() -> bytes:
+    """Codex's workspace-write sandbox keeps .git read-only, and a Git store lives in
+    <git-common-dir>/worklog, outside a linked worktree altogether. Reads work there;
+    this rule runs the frontier writes outside the sandbox without a prompt."""
+    subcommands = ", ".join(f'"{name}"' for name in CODEX_ALLOWED)
+    return f"""# Written by `worklog install codex`; `worklog uninstall codex` removes it.
+# Codex keeps .git read-only in its workspace-write sandbox, so it cannot write the
+# Worklog store in <git-common-dir>/worklog. These frontier writes touch only that
+# store and run outside the sandbox. Other worklog commands keep the normal approval.
+prefix_rule(
+    pattern = ["worklog", [{subcommands}]],
+    decision = "allow",
+    match = [["worklog", "update", "CARD", "--expect", "REV"]],
+    not_match = [["worklog", "launch", "--", "sh"], ["worklog", "install", "codex"],
+                 ["worklog", "--root", ".", "update"]],
+)
+""".encode()
 
 
 def session_id(payload: dict, harness: str, workspace: Workspace, account: str) -> str:
@@ -113,6 +136,9 @@ def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
             "save current position, next action and still-valid cautions with `worklog update`/`handoff`. "
             "Do not append a session summary. Historical landmarks have only GLOBAL slots 1..3. "
             f"If no material state changed, run `worklog ack --session {sid}`. "
+            "If a worklog write fails with `read_only`, your sandbox cannot write the store: do not "
+            "retry, ack or work around it; tell the user the store path, the fix the error names, "
+            "and the update you would have saved. "
             "Do not fabricate progress or completion merely to satisfy this reminder."}
     return {}
 
@@ -150,10 +176,13 @@ def install(ws: Workspace, harness: str, *, dry_run: bool = False, uninstall: bo
     template = config(harness)
     target = ws.root / (".claude/settings.local.json" if harness == "claude" else ".codex/hooks.json")
     skill_target = ws.root / (".claude/skills/worklog/SKILL.md" if harness == "claude" else ".agents/skills/worklog/SKILL.md")
-    skill = files("worklog").joinpath("templates/SKILL.md").read_bytes()
+    owned = [(skill_target, files("worklog").joinpath("templates/SKILL.md").read_bytes())]
+    rules_target = ws.root / ".codex/rules/worklog.rules" if harness == "codex" else None
+    if rules_target:
+        owned.append((rules_target, codex_rules()))
     with file_lock(ws.lock):
-        if target.is_symlink() or skill_target.is_symlink():
-            raise Invalid("Refusing to overwrite a symlinked config or skill")
+        if target.is_symlink() or any(path.is_symlink() for path, _ in owned):
+            raise Invalid("Refusing to overwrite a symlinked config, skill or rule")
         raw = target.read_bytes() if target.exists() else b"{}"
         try:
             merged = json.loads(raw)
@@ -186,10 +215,16 @@ def install(ws: Workspace, harness: str, *, dry_run: bool = False, uninstall: bo
         if not dry_run:
             if raw != updated:
                 atomic_write(target, updated)
-            if not uninstall and (not skill_target.exists() or skill_target.read_bytes() != skill):
-                atomic_write(skill_target, skill)
-            elif uninstall and skill_target.exists() and skill_target.read_bytes() == skill:
-                skill_target.unlink()
-    return {"config_path": str(target), "skill_path": str(skill_target), "dry_run": dry_run,
-            "uninstall": uninstall, "merged_config": merged,
-            "note": "Only Worklog-owned handlers were replaced. No provider credentials copied. Restart/review hook trust in your agent."}
+            for path, content in owned:
+                # A file someone edited is left in place on uninstall.
+                if not uninstall and (not path.exists() or path.read_bytes() != content):
+                    atomic_write(path, content)
+                elif uninstall and path.exists() and path.read_bytes() == content:
+                    path.unlink()
+    note = "Only Worklog-owned handlers were replaced. No provider credentials copied. Restart/review hook trust in your agent."
+    if rules_target:
+        note += (" The rule lets frontier writes run outside Codex's sandbox, which keeps .git"
+                 " read-only; Codex loads it only in a trusted project.")
+    return {"config_path": str(target), "skill_path": str(skill_target),
+            "rules_path": str(rules_target) if rules_target else None, "dry_run": dry_run,
+            "uninstall": uninstall, "merged_config": merged, "note": note}

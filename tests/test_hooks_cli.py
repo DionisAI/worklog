@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -12,10 +13,10 @@ import pytest
 
 import worklog.cli as cli_module
 from worklog.core import Worklog
-from worklog.hooks import MUTATING, config, handle, install, session_id
+from worklog.hooks import CODEX_ALLOWED, MUTATING, codex_rules, config, handle, install, session_id
 from worklog.errors import Invalid, MigrationRequired
 from worklog.runtime import Runtime
-from worklog.cli import main
+from worklog.cli import main, parser
 from worklog.workspace import Workspace
 from conftest import needs_file_modes, read_only, signature
 
@@ -89,7 +90,9 @@ def test_stop_reminds_once_and_never_copies_transcript(w, payload, tmp_path):
     payload["transcript_path"] = str(transcript)
     handle({**payload, "hook_event_name": "PreToolUse", "tool_name": "Write"}, "codex")
     stop = {**payload, "hook_event_name": "Stop", "last_assistant_message": "Unverified fake success"}
-    assert handle(stop, "codex")["decision"] == "block"
+    reminder = handle(stop, "codex")
+    assert reminder["decision"] == "block"
+    assert "fails with `read_only`" in reminder["reason"] and "do not retry, ack" in reminder["reason"]
     assert handle({**stop, "stop_hook_active": True}, "codex") == {}
     for p in w.ws.store.rglob("*"):
         if p.is_file():
@@ -177,10 +180,57 @@ def test_install_is_idempotent_preserves_other_hooks_removes_old_events(w, harne
     assert set(parsed["hooks"]) == {"PostToolUse"}
 
 
-def test_install_dry_run_does_not_write(w):
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+def test_install_dry_run_does_not_write(w, harness):
     before = signature(w.ws.root)
-    result = install(w.ws, "claude", dry_run=True)
+    result = install(w.ws, harness, dry_run=True)
     assert result["dry_run"] and signature(w.ws.root) == before
+
+
+def test_install_codex_adds_its_rule_and_uninstall_removes_only_ours(w):
+    rules = w.ws.root / ".codex/rules/worklog.rules"
+    assert install(w.ws, "claude")["rules_path"] is None and not rules.exists()
+    result = install(w.ws, "codex")
+    assert result["rules_path"] == str(rules) and rules.read_bytes() == codex_rules()
+    install(w.ws, "codex", uninstall=True)
+    assert not rules.exists()
+    install(w.ws, "codex")
+    rules.write_text(rules.read_text() + "# user note\n")
+    install(w.ws, "codex", uninstall=True)
+    assert rules.read_text().endswith("# user note\n")  # edited: left in place
+    rules.unlink()
+    rules.symlink_to(w.ws.root / "elsewhere.rules")
+    with pytest.raises(Invalid, match="symlinked"):
+        install(w.ws, "codex")
+    assert not (w.ws.root / "elsewhere.rules").exists()
+
+
+def test_codex_rule_allows_exactly_the_frontier_writes():
+    subcommands = set(next(a for a in parser()._actions if hasattr(a, "choices") and a.choices
+                           and "status" in a.choices).choices)
+    reads = {"status", "stats", "doctor", "show", "context"}
+    # Each runs arbitrary commands, edits configs, or rebuilds the store: keep Codex's approval.
+    never = {"init", "launch", "install", "uninstall", "hook", "migrate", "clear-runtime"}
+    assert set(CODEX_ALLOWED) == subcommands - reads - never  # a new subcommand must be classified
+    pattern = codex_rules().decode().split("pattern = ", 1)[1].split("\n", 1)[0]
+    assert all(f'"{name}"' in pattern for name in CODEX_ALLOWED)
+    assert not any(f'"{name}"' in pattern for name in never | reads)
+
+
+@pytest.mark.skipif(shutil.which("codex") is None, reason="Codex CLI not installed")
+def test_codex_parses_the_rule_and_allows_only_frontier_writes(tmp_path):
+    rules = tmp_path / "worklog.rules"
+    rules.write_bytes(codex_rules())  # also runs the rule's own match/not_match examples
+    def decision(*argv):
+        p = subprocess.run(["codex", "execpolicy", "check", "--rules", str(rules), *argv],
+                           capture_output=True, text=True, timeout=60)
+        assert p.returncode == 0, p.stderr
+        return json.loads(p.stdout).get("decision")
+    assert decision("worklog", "update", "a", "--expect", "REV", "--current", "x") == "allow"
+    assert decision("worklog", "ack", "--session", "s") == "allow"
+    for argv in (["worklog", "launch", "--harness", "h", "--", "sh"], ["worklog", "install", "codex"],
+                 ["worklog", "--root", ".", "update", "a"], ["worklog", "status"]):
+        assert decision(*argv) is None
 
 
 def test_malformed_existing_config_never_overwritten(w):
@@ -329,6 +379,7 @@ def test_cli_reads_a_read_only_git_store_and_names_it_on_writes(tmp_path):
             error = json.loads(p.stderr)
             assert p.returncode == 2 and error["error"] == "read_only"
             assert str(w.ws.store) in error["message"] and "outside the agent sandbox" in error["message"]
+            assert "`worklog install codex`" in error["message"]
     assert w.show("replay") == card
 
 

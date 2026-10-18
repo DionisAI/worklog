@@ -12,7 +12,8 @@ then publishes via a fixed staging file and atomic rename. Identical updates do
 not write or advance revision. Reads never mutate semantic or runtime state. They
 take a shared lock through a read-only descriptor of `worklog.lock`, so they work in a
 store this process cannot write (`.git` is read-only inside Codex's workspace-write
-sandbox); a write there fails with a `read_only` error naming the store.
+sandbox); a write there fails with a `read_only` error naming the store. `worklog install
+codex` adds a Codex rule that runs the frontier writes outside that sandbox.
 
 Cards have independent CAS tokens. Workspace-level overview/landmark selection uses
 a workspace CAS token. Tokens are random fixed-width UUID4 values, not growing

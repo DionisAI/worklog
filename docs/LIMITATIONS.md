@@ -33,3 +33,7 @@
 - 0.1's task/verify/job/events API is removed. 0.2 commands and expectations differ;
   reinstall the skills/hooks and disable old native plugins. Duplicate host hook
   registrations in other scopes cannot be removed by a project-local installer.
+- The Codex rule (`.codex/rules/worklog.rules`) uses Codex's experimental rules
+  feature. It was checked with `codex execpolicy check` and the store grant with
+  `codex sandbox`, not in a live Codex agent session. Allowed commands run outside
+  the sandbox, so the `worklog` on PATH must not be writable from inside it.

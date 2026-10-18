@@ -32,7 +32,10 @@ Reads (`status`, `show`, `context`, `stats`, `doctor` and the hooks' reads) take
 lock through a read-only descriptor of `worklog.lock`, so they work where the store is
 read-only, such as `.git/worklog` inside Codex's workspace-write sandbox. A write there
 fails with a structured `read_only` error naming the store directory instead of an
-`io_error` (EPERM).
+`io_error` (EPERM). `worklog install codex` also writes `.codex/rules/worklog.rules`, which
+runs the frontier writes outside Codex's sandbox in a trusted project (`uninstall` removes
+it unless edited). The Stop reminder and skill tell the agent to report a `read_only`
+write instead of retrying. Rerun `worklog install codex`.
 
 ## 0.2.0 — Frontier (breaking)
 
