@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 from importlib.resources import files
+from pathlib import Path
 
 from .core import Worklog
 from .errors import Invalid, NotFound, WorklogError
@@ -50,16 +53,25 @@ prefix_rule(
 )
 """.encode()
 
+# Project-local adapter files. They are untracked, so every Git worktree needs its own install.
+CONFIG_PATHS = {"claude": ".claude/settings.local.json", "codex": ".codex/hooks.json"}
+SKILL_PATHS = {"claude": ".claude/skills/worklog/SKILL.md", "codex": ".agents/skills/worklog/SKILL.md"}
+CODEX_RULES_PATH = ".codex/rules/worklog.rules"
+
 
 def session_id(payload: dict, harness: str, workspace: Workspace, account: str) -> str:
+    # Subagents (payload agent_id) are the same writer: same process tree and checkout, and no
+    # SessionStart/Stop of their own here. A separate id only produced false foreign-writer
+    # advisories and runtime entries that evicted the parent's reminder.
     pinned = os.environ.get("WORKLOG_SESSION_ID")
-    child = payload.get("agent_id")
-    if pinned and not child:
+    if pinned:
         return identifier(pinned, "WORKLOG_SESSION_ID")
     native = payload.get("session_id")
     if not isinstance(native, str) or not native or len(native) > 512:
         raise Invalid("Hook needs its native session_id; refusing to guess a concurrent session")
-    return "s_" + digest([harness, account, native, child, workspace.checkout_id])[:32]
+    # None fills the old subagent slot and the path-based checkout id stays, so existing
+    # session ids (and the cards they own) are unchanged by upgrading.
+    return "s_" + digest([harness, account, native, None, workspace.legacy_checkout_id])[:32]
 
 
 def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
@@ -112,7 +124,7 @@ def handle(payload: dict, harness: str, *, event: str | None = None) -> dict:
         # A boolean only, no commands/transcripts/output retained. CLI update/ack clears it.
         runtime.update(sid, dirty=True)
         foreign = [c["id"] for c in worklog.read()["cards"].values()
-                   if c["owner"] and c["owner"]["checkout_id"] == ws.checkout_id
+                   if c["owner"] and ws.is_checkout(c["owner"]["checkout_id"])
                    and c["owner"]["session_id"] != sid]
         if foreign:
             worktree = "; use a separate Git worktree for parallel edits" if ws.git else ""
@@ -174,10 +186,10 @@ def _ours(handler: dict, harness: str) -> bool:
 
 def install(ws: Workspace, harness: str, *, dry_run: bool = False, uninstall: bool = False) -> dict:
     template = config(harness)
-    target = ws.root / (".claude/settings.local.json" if harness == "claude" else ".codex/hooks.json")
-    skill_target = ws.root / (".claude/skills/worklog/SKILL.md" if harness == "claude" else ".agents/skills/worklog/SKILL.md")
+    target = ws.root / CONFIG_PATHS[harness]
+    skill_target = ws.root / SKILL_PATHS[harness]
     owned = [(skill_target, files("worklog").joinpath("templates/SKILL.md").read_bytes())]
-    rules_target = ws.root / ".codex/rules/worklog.rules" if harness == "codex" else None
+    rules_target = ws.root / CODEX_RULES_PATH if harness == "codex" else None
     if rules_target:
         owned.append((rules_target, codex_rules()))
     with file_lock(ws.lock):
@@ -221,10 +233,125 @@ def install(ws: Workspace, harness: str, *, dry_run: bool = False, uninstall: bo
                     atomic_write(path, content)
                 elif uninstall and path.exists() and path.read_bytes() == content:
                     path.unlink()
-    note = "Only Worklog-owned handlers were replaced. No provider credentials copied. Restart/review hook trust in your agent."
+    note = ("Only Worklog-owned handlers were replaced. No provider credentials copied. Restart/review hook "
+            "trust in your agent. These files are untracked: run install in each Git worktree too.")
     if rules_target:
         note += (" The rule lets frontier writes run outside Codex's sandbox, which keeps .git"
                  " read-only; Codex loads it only in a trusted project.")
-    return {"config_path": str(target), "skill_path": str(skill_target),
-            "rules_path": str(rules_target) if rules_target else None, "dry_run": dry_run,
-            "uninstall": uninstall, "merged_config": merged, "note": note}
+    result = {"config_path": str(target), "skill_path": str(skill_target),
+              "rules_path": str(rules_target) if rules_target else None, "dry_run": dry_run,
+              "uninstall": uninstall, "merged_config": merged, "note": note}
+    if not uninstall and not can_import_worklog(sys.executable, ws.root):
+        result["warning"] = (f"The hook interpreter {sys.executable} cannot import worklog without PYTHONPATH, so these "
+                             "hooks fail unless your agent's environment sets it. Install the package "
+                             "(`uv tool install .` or pip), then rerun `worklog install`.")
+    return result
+
+def can_import_worklog(python: str, cwd: Path) -> bool:
+    """Whether a hook command's interpreter finds worklog on its own: -P, no PYTHONPATH."""
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"  # A probe must not leave caches behind.
+    try:
+        return subprocess.run([python, "-P", "-c", "import worklog"], cwd=cwd, env=env,
+                              capture_output=True, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _outside(path: Path, *dirs: Path) -> bool:
+    resolved = path.resolve()
+    return not any(resolved.is_relative_to(d.resolve()) for d in dirs)
+
+
+def inspect_adapters(ws: Workspace) -> tuple[dict, list[dict]]:
+    """Read-only check of this checkout's project-local hooks: (configs per harness, problems).
+
+    Only an absolute interpreter outside the checkout and store is ever executed, with fixed
+    arguments, so a committed config cannot make doctor run project code."""
+    found: dict[str, list[str]] = {}
+    problems: list[dict] = []
+    runnable: dict[str, bool] = {}
+    template_skill = files("worklog").joinpath("templates/SKILL.md").read_bytes()
+    for harness, rel in (("claude", CONFIG_PATHS["claude"]), ("claude", ".claude/settings.json"),
+                         ("codex", CONFIG_PATHS["codex"])):
+        path = ws.root / rel
+        reinstall = f"`worklog install {harness}` in {ws.root}"
+        if rel == ".claude/settings.json":  # Often shared and committed; install never edits it.
+            reinstall = ("update its Worklog handlers to match `worklog install claude --dry-run` (merged_config), "
+                         "or remove them and run `worklog install claude`")
+        try:
+            if not path.is_file():
+                continue
+            hooks = json.loads(path.read_bytes()).get("hooks", {})
+            ours = {event: [(g, h) for g in groups for h in g["hooks"] if isinstance(h, dict) and _ours(h, harness)]
+                    for event, groups in hooks.items()}
+        except (ValueError, OSError, AttributeError, TypeError, KeyError):
+            problems.append({"error": "adapter", "message": f"{rel} is not a readable hook config",
+                             "fix": f"fix or remove it, then `worklog install {harness}`"})
+            continue
+        ours = {event: entries for event, entries in ours.items() if entries}
+        if not ours:
+            continue
+        found.setdefault(harness, []).append(rel)
+        issues: list[tuple[str, str]] = []
+        if missing := [e for e in EVENTS if e not in ours]:
+            issues.append(("missing hooks for " + ", ".join(missing), reinstall))
+        if twice := [e for e, entries in ours.items() if len(entries) > 1]:
+            issues.append(("duplicate hooks for " + ", ".join(twice), reinstall))
+        if "PreToolUse" in ours:
+            matcher = ours["PreToolUse"][0][0].get("matcher")
+            if matcher in (None, "", "*"):
+                issues.append(("PreToolUse has no tool matcher, so it runs for every tool", reinstall))
+            elif matcher != TOOL_MATCHER:
+                issues.append(("PreToolUse matcher differs from the current one", reinstall))
+        for entries in ours.values():
+            words = shlex.split(entries[0][1]["command"])
+            if words[:1] == ["worklog"]:
+                if shutil.which("worklog") is None:
+                    issues.append(("`worklog` is not on PATH", "install the package (`uv tool install .` or pip)"))
+                continue
+            flags = words[1:words.index("-m")]
+            if not all(f.startswith("-") and not f.startswith("--") for f in flags):
+                continue  # A wrapper or prefix (env, uv run, ...): its real interpreter is not knowable here.
+            if not any("P" in f or "I" in f for f in flags):
+                issues.append(("hook command lacks -P, so project files can shadow Worklog", reinstall))
+            python = words[0]
+            if not Path(python).is_absolute() or not _outside(Path(python), ws.root, ws.store):
+                issues.append((f"hook interpreter {python} is relative or inside this checkout, so doctor did not run it",
+                               reinstall))
+                continue
+            if python not in runnable:
+                runnable[python] = can_import_worklog(python, ws.root)
+            if not runnable[python]:
+                issues.append((f"{python} cannot import worklog with -P and no PYTHONPATH (needs Python 3.11+ "
+                               "with worklog installed)",
+                               f"install the package (`uv tool install .` or pip), then rerun {reinstall}"))
+        skill = ws.root / SKILL_PATHS[harness]
+        try:
+            current = skill.is_file() and skill.read_bytes() == template_skill
+        except OSError:
+            current = False
+        if not current:
+            issues.append((f"skill {SKILL_PATHS[harness]} is missing, unreadable or outdated", reinstall))
+        checked = [path, skill]
+        if harness == "codex":
+            rules = ws.root / CODEX_RULES_PATH
+            checked.append(rules)
+            try:
+                current = rules.is_file() and rules.read_bytes() == codex_rules()
+            except OSError:
+                current = False
+            if not current:
+                issues.append((f"rule {CODEX_RULES_PATH} is missing, unreadable or outdated, so Codex runs "
+                               "frontier writes inside its sandbox", reinstall))
+        links = [p.relative_to(ws.root).as_posix() for p in checked if p.is_symlink()]
+        for issue, fix in dict.fromkeys(issues):
+            if links:  # install refuses to overwrite symlinks, so it cannot be the fix.
+                fix = (f"{' and '.join(links)} is a symlink, which `worklog install` will not overwrite: "
+                       f"edit its target, or replace it with a regular file and rerun `worklog install {harness}`")
+            problems.append({"error": "adapter", "message": f"{rel}: {issue}", "fix": fix})
+    if len(found.get("claude", [])) > 1:
+        problems.append({"error": "adapter", "message": "Worklog hooks are in both " + " and ".join(found["claude"]) +
+                         ", so they run twice", "fix": "remove them from .claude/settings.json, or run "
+                         "`worklog uninstall claude` if your team keeps them there"})
+    return found, problems

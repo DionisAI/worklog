@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import worklog.cli as cli_module
+import worklog.hooks as hooks_module
 from worklog.core import Worklog
 from worklog.hooks import CODEX_ALLOWED, MUTATING, codex_rules, config, handle, install, session_id
 from worklog.errors import Invalid, MigrationRequired
@@ -19,6 +21,7 @@ from worklog.runtime import Runtime
 from worklog.cli import main, parser
 from worklog.workspace import Workspace
 from conftest import needs_file_modes, read_only, signature
+from worklog.util import digest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,7 +54,7 @@ def fill_frontier(w, me):
     for i in range(16):
         c = w.add(f"card-{i:02d}", f"Card {i}\n" + "t" * 80, f"current-{i:02d} " + "c" * 900, "n" * 300,
                   cautions=["k" * 100], references=["r" * 60])["card"]
-        writer = w if i == 7 else Worklog(dataclasses.replace(w.ws, root=w.ws.root / f"wt{i}"))
+        writer = w if i == 7 else Worklog(dataclasses.replace(w.ws, root=w.ws.root / f"wt{i}", checkout=f"worktree:wt{i}"))
         writer.claim(c["id"], c["revision"], session=me if i == 7 else f"s_{i:032x}")
     assert w.stats()["frontier_bytes"] > 30000
 
@@ -129,11 +132,24 @@ def test_pinned_identity_keeps_its_card_across_clear_and_resume(w, card, payload
     assert (w.show("replay")["owner"] is not None) == kept
 
 
-def test_subagent_does_not_inherit_parent_identity(w, payload, monkeypatch):
-    monkeypatch.setenv("WORKLOG_SESSION_ID", "root_session")
+def test_subagents_share_their_parents_identity(w, payload, monkeypatch):
     parent = session_id(payload, "claude", w.ws, "default")
-    child = session_id({**payload, "agent_id": "child"}, "claude", w.ws, "default")
-    assert parent == "root_session" and child != parent
+    assert session_id({**payload, "agent_id": "child"}, "claude", w.ws, "default") == parent
+    # Upgrading must not change a running session's id, or it would lose its own card.
+    assert parent == "s_" + digest(["claude", "default", payload["session_id"], None,
+                                    w.ws.legacy_checkout_id])[:32]
+    monkeypatch.setenv("WORKLOG_SESSION_ID", "root_session")
+    assert session_id({**payload, "agent_id": "child"}, "claude", w.ws, "default") == "root_session"
+
+
+def test_subagent_edits_get_no_foreign_writer_advisory_and_flag_the_parent(w, card, payload):
+    parent = session_id(payload, "claude", w.ws, "default")
+    w.claim("replay", card["revision"], session=parent)
+    for i in range(40):  # more subagents than runtime entries
+        edit = {**payload, "hook_event_name": "PreToolUse", "tool_name": "Edit", "agent_id": f"sub-{i}"}
+        assert handle(edit, "claude") == {}
+    assert len(Runtime(w.ws)._load()["sessions"]) == 1
+    assert handle({**payload, "hook_event_name": "Stop"}, "claude")["decision"] == "block"
 
 
 def test_missing_hook_identity_is_not_guessed(w):
@@ -209,8 +225,8 @@ def test_codex_rule_allows_exactly_the_frontier_writes():
     subcommands = set(next(a for a in parser()._actions if hasattr(a, "choices") and a.choices
                            and "status" in a.choices).choices)
     reads = {"status", "stats", "doctor", "show", "context"}
-    # Each runs arbitrary commands, edits configs, or rebuilds the store: keep Codex's approval.
-    never = {"init", "launch", "install", "uninstall", "hook", "migrate", "clear-runtime"}
+    # Each runs arbitrary commands, edits configs, or rebuilds/discards the store: keep Codex's approval.
+    never = {"init", "launch", "install", "uninstall", "hook", "migrate", "clear-runtime", "reset"}
     assert set(CODEX_ALLOWED) == subcommands - reads - never  # a new subcommand must be classified
     pattern = codex_rules().decode().split("pattern = ", 1)[1].split("\n", 1)[0]
     assert all(f'"{name}"' in pattern for name in CODEX_ALLOWED)
@@ -424,7 +440,7 @@ def test_broken_store_never_blocks_the_host(w, payload, monkeypatch, capsys, kin
     code, out, err, _ = run_hook_cli(monkeypatch, capsys, body, "--harness", "claude", "--event", event)
     assert code == 0 and "decision" not in out
     if event in ("SessionStart", "UserPromptSubmit"):
-        assert out["systemMessage"].startswith("Worklog hook skipped (")
+        assert out["systemMessage"].startswith("Worklog hook skipped (") and "worklog doctor" in out["systemMessage"]
         assert json.loads(err.splitlines()[-1])["error"] in out["systemMessage"]
     else:
         assert out == {}
@@ -577,3 +593,188 @@ def test_hook_output_is_ascii_json_under_a_non_utf8_locale(w, payload):
                        timeout=15, encoding="latin-1")
     assert p.returncode == 0 and p.stdout.isascii()
     assert "中文卡片" in json.loads(p.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+# Recovery path and adapter checks.
+
+def test_doctor_reports_a_corrupt_frontier_with_recovery_steps(w, card):
+    break_store(w, "corrupt_frontier")
+    p = cli(w, ["doctor"])
+    report = json.loads(p.stdout)
+    assert p.returncode == 2 and not report["ok"] and "corruption" in p.stderr
+    problem = report["problems"][0]
+    assert problem["error"] == "corruption" and str(w.ws.store / "frontier.json") in problem["message"]
+    assert "worklog reset --discard-current-state --confirm" in problem["fix"]
+
+
+@pytest.mark.parametrize("kind, code", [("missing", "not_found"), ("legacy", "migration_required")])
+def test_doctor_explains_unopenable_workspaces(w, tmp_path_factory, kind, code, capsys):
+    root = tmp_path_factory.mktemp("empty") if kind == "missing" else w.ws.root  # outside any workspace
+    if kind == "legacy":
+        break_store(w, "legacy")
+    report, exit_code = cli_module.doctor(str(root))
+    assert exit_code == 2 and report["problems"][0]["error"] == code and report["problems"][0]["fix"]
+
+
+def test_init_reports_a_corrupt_frontier_instead_of_success(w):
+    break_store(w, "corrupt_frontier")
+    p = cli(w, ["init"])
+    assert p.returncode == 2 and "corruption" in p.stderr
+
+
+def test_reset_replaces_only_an_unreadable_frontier(w, card):
+    w.note("1", "lesson", expected=w.read()["revision"])
+    assert cli(w, ["reset", "--discard-current-state", "--confirm"]).returncode == 2  # readable: refused
+    assert w.show("replay") == card
+    break_store(w, "corrupt_frontier")
+    assert cli(w, ["reset", "--confirm"]).returncode == 2  # both flags are required
+    p = cli(w, ["reset", "--discard-current-state", "--confirm"])
+    assert p.returncode == 0 and json.loads(p.stdout)["reset"]
+    state = w.read()
+    assert state["cards"] == {} and state["notes"] == {} and state["workspace_id"] == w.ws.workspace_id
+
+
+def test_doctor_checks_this_checkouts_hook_adapters(w, monkeypatch, capsys):
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: True)
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert code == 0 and report["adapters"] == {} and "each Git worktree" in report["adapter_note"]
+    install(w.ws, "claude")
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert code == 0 and report["adapters"] == {"claude": [".claude/settings.local.json"]}
+    config_path = w.ws.root / ".claude/settings.local.json"
+    stale = json.loads(config_path.read_text())
+    stale["hooks"]["PreToolUse"][0].pop("matcher")
+    for groups in stale["hooks"].values():
+        groups[0]["hooks"][0]["command"] = groups[0]["hooks"][0]["command"].replace(" -P ", " ")
+    config_path.write_text(json.dumps(stale))
+    (w.ws.root / ".claude/settings.json").write_text(json.dumps({"hooks": {"Stop": stale["hooks"]["Stop"]}}))
+    (w.ws.root / ".claude/skills/worklog/SKILL.md").write_text("old skill\n")
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: False)
+    report, code = cli_module.doctor(str(w.ws.root))
+    messages = " ".join(p["message"] for p in report["problems"])
+    assert code == 2 and not report["ok"]
+    for expected in ("no tool matcher", "lacks -P", "cannot import worklog", "unreadable or outdated",
+                     "missing hooks for SessionStart", "run twice"):
+        assert expected in messages
+    assert all(p["fix"] for p in report["problems"])
+
+
+def test_install_warns_when_hooks_could_not_import_worklog(w, monkeypatch):
+    assert not hooks_module.can_import_worklog(str(w.ws.root / "no-such-python"), w.ws.root)
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: False)
+    assert "cannot import worklog" in install(w.ws, "codex")["warning"]
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: True)
+    assert "warning" not in install(w.ws, "codex")
+
+
+def test_doctor_probes_each_trusted_interpreter_once_and_never_project_files(w, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: calls.append(python) or True)
+    install(w.ws, "claude")
+    calls.clear()
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert code == 0 and calls == [sys.executable]  # one probe for five hook entries
+    config_path = w.ws.root / ".claude/settings.local.json"
+    planted = json.loads(config_path.read_text())
+    for groups in planted["hooks"].values():
+        groups[0]["hooks"][0]["command"] = groups[0]["hooks"][0]["command"].replace(
+            shlex.quote(sys.executable), "./venv/bin/python", 1)
+    config_path.write_text(json.dumps(planted))
+    calls.clear()
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert calls == [] and code == 2 and "did not run it" in report["problems"][0]["message"]
+
+
+def test_doctor_does_not_misjudge_wrapped_hook_commands(w, monkeypatch, capsys):
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: False)
+    install(w.ws, "codex")
+    config_path = w.ws.root / ".codex/hooks.json"
+    wrapped = json.loads(config_path.read_text())
+    for event, groups in wrapped["hooks"].items():
+        groups[0]["hooks"][0]["command"] = f"uv run python -m worklog hook --harness codex --event {event}"
+    config_path.write_text(json.dumps(wrapped))
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert code == 0 and report["adapters"] == {"codex": [".codex/hooks.json"]}
+
+
+@pytest.mark.parametrize("damage, expected", [
+    ("duplicate", "duplicate hooks for SessionStart"),
+    ("invalid", "not a readable hook config"),
+    ("console_off_path", "`worklog` is not on PATH"),
+    ("old_matcher", "matcher differs"),
+])
+def test_doctor_reports_each_adapter_problem(w, monkeypatch, capsys, tmp_path_factory, damage, expected):
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: True)
+    install(w.ws, "claude")
+    config_path = w.ws.root / ".claude/settings.local.json"
+    config = json.loads(config_path.read_text())
+    if damage == "duplicate":
+        config["hooks"]["SessionStart"].append(config["hooks"]["SessionStart"][0])
+    elif damage == "invalid":
+        config = ["not", "an", "object"]
+    elif damage == "console_off_path":
+        for event, groups in config["hooks"].items():
+            groups[0]["hooks"][0]["command"] = f"worklog hook --harness claude --event {event}"
+        monkeypatch.setenv("PATH", str(tmp_path_factory.mktemp("empty-path")))
+    elif damage == "old_matcher":
+        config["hooks"]["PreToolUse"][0]["matcher"] = "Edit|Write"
+    config_path.write_text(json.dumps(config))
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert code == 2 and any(expected in p["message"] for p in report["problems"])
+
+
+def test_shared_claude_settings_get_a_fix_that_does_not_point_at_install(w, monkeypatch, capsys):
+    monkeypatch.setattr(hooks_module, "can_import_worklog", lambda python, cwd: True)
+    shared = config("claude")
+    shared["hooks"]["PreToolUse"][0].pop("matcher")
+    (w.ws.root / ".claude").mkdir()
+    (w.ws.root / ".claude/settings.json").write_text(json.dumps(shared))
+    report, _ = cli_module.doctor(str(w.ws.root))
+    fix = next(p["fix"] for p in report["problems"] if "no tool matcher" in p["message"])
+    assert "--dry-run" in fix and "remove them" in fix
+
+
+def test_can_import_worklog_runs_isolated_from_pythonpath(w, monkeypatch):
+    seen = {}
+    def fake_run(argv, **kwargs):
+        seen.update(argv=argv, **kwargs)
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setenv("PYTHONPATH", "/somewhere/src")
+    monkeypatch.setattr(hooks_module.subprocess, "run", fake_run)
+    assert hooks_module.can_import_worklog("/usr/bin/python3", w.ws.root)
+    assert seen["argv"] == ["/usr/bin/python3", "-P", "-c", "import worklog"] and seen["cwd"] == w.ws.root
+    assert "PYTHONPATH" not in seen["env"] and seen["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_doctor_lists_unexpected_files_as_a_problem(w, capsys):
+    (w.ws.store / "stray.txt").write_text("not ours")
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert code == 2 and report["problems"][0]["error"] == "unexpected_files"
+    assert "stray.txt" in report["problems"][0]["message"] and report["unexpected_files"] == ["stray.txt"]
+
+
+def test_missing_or_symlinked_frontier_gets_a_working_fix(w, card, tmp_path_factory, capsys):
+    frontier = w.ws.store / "frontier.json"
+    elsewhere = tmp_path_factory.mktemp("elsewhere") / "frontier.json"
+    elsewhere.write_bytes(frontier.read_bytes())
+    frontier.unlink()
+    frontier.symlink_to(elsewhere)
+    report, _ = cli_module.doctor(str(w.ws.root))
+    assert report["problems"][0]["fix"].startswith("Worklog never follows or replaces symlinked")
+    frontier.unlink()
+    report, _ = cli_module.doctor(str(w.ws.root))
+    assert "never recreates it on its own" in report["problems"][0]["message"]
+    assert "worklog reset" in report["problems"][0]["fix"]
+    assert cli(w, ["reset", "--discard-current-state", "--confirm"]).returncode == 0 and w.read()["cards"] == {}
+
+
+def test_a_corrupt_workspace_json_is_rebuilt_from_the_intact_frontier(w, card, capsys):
+    meta = w.ws.store / "workspace.json"
+    meta.write_text("{not json")
+    report, code = cli_module.doctor(str(w.ws.root))
+    assert code == 2 and str(meta) in report["problems"][0]["message"]
+    assert "rebuilds it from frontier.json" in report["problems"][0]["fix"]
+    meta.rename(w.ws.store / "workspace.json.broken")  # the documented fix, then init
+    (w.ws.store / "workspace.json.broken").unlink()
+    assert cli(w, ["init"]).returncode == 0
+    assert Workspace.open(w.ws.root).workspace_id == w.ws.workspace_id and w.show("replay") == card

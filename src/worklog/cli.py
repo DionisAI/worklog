@@ -9,8 +9,8 @@ from pathlib import Path
 
 from . import __version__
 from .core import Worklog
-from .errors import Invalid, WorklogError
-from .hooks import handle, install
+from .errors import Corruption, Invalid, WorklogError
+from .hooks import handle, inspect_adapters, install
 from .model import STATUSES
 from .runtime import Runtime
 from .util import revision
@@ -26,7 +26,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--name")
     sub.add_parser("status", help="Read the entire current state as JSON; no write")
     sub.add_parser("stats", help="Inspect actual size/file count and bounds")
-    sub.add_parser("doctor", help="Validate bounded frontier and report unexpected old files")
+    sub.add_parser("doctor", help="Diagnose the store and this checkout's hooks, with recovery steps")
     show = sub.add_parser("show", help="Read one current card")
     show.add_argument("id")
     context = sub.add_parser("context", help="Full current context; bounded by admission, never silently truncated")
@@ -82,6 +82,9 @@ def parser() -> argparse.ArgumentParser:
                        help="Your session, so the hook does not re-send your own write")
     ack = sub.add_parser("ack", help="Clear a disposable hook reminder when nothing materially changed")
     ack.add_argument("--session", default=os.environ.get("WORKLOG_SESSION_ID"))
+    reset = sub.add_parser("reset", help="Replace an UNREADABLE frontier with an empty one; its cards are lost")
+    reset.add_argument("--discard-current-state", action="store_true")
+    reset.add_argument("--confirm", action="store_true")
     clear = sub.add_parser("clear-runtime", help="Discard bounded hook flags, not frontier or owner claims")
     clear.add_argument("--confirm", action="store_true")
     for name in ("install", "uninstall"):
@@ -139,7 +142,7 @@ def hook_invocation(argv: list[str]) -> bool:
 def hook_skipped(event: object, code: str, message: str) -> dict:
     print(json.dumps({"error": code, "message": message}, ensure_ascii=False), file=sys.stderr)
     if event in ("SessionStart", "UserPromptSubmit"):
-        return {"systemMessage": f"Worklog hook skipped ({code}): {message}"}
+        return {"systemMessage": f"Worklog hook skipped ({code}): {message.rstrip('.')}. Run `worklog doctor` for recovery steps."}
     return {}
 
 
@@ -167,9 +170,73 @@ def run_hook(a) -> dict:
         return hook_skipped(event, "internal_error", f"{type(exc).__name__}: {exc}")
 
 
+OPEN_FIXES = {
+    "not_found": "`worklog init` creates a workspace here",
+    "migration_required": "stop all v0.1 agents, then `worklog migrate --plan` (or rerun the pending apply)",
+    "corruption": ("if the named file is the store's own workspace.json (next to frontier.json), move it aside and "
+                   "rerun `worklog init`, which rebuilds it from frontier.json with the same workspace id; if it is "
+                   "a working-tree .worklog/workspace.json pointer in a Git repo, repair or remove it"),
+    "conflict": "keep one of the two named stores and remove or repair the other's workspace.json binding",
+    "busy": "another Worklog process holds worklog.lock; rerun `worklog doctor` once it finishes",
+    "io_error": "check that the named path is a regular file or directory this user can read and write",
+}
+FRONTIER_FIX = ("if it holds a merge conflict or a partial edit, restore a good copy (Worklog keeps no backups); "
+                "otherwise `worklog reset --discard-current-state --confirm` replaces it with an empty frontier "
+                "in the same workspace, losing its cards and landmarks")
+SYMLINK_FIX = ("Worklog never follows or replaces symlinked store files: replace the link with a regular copy of "
+               "its target (or remove it), then rerun `worklog doctor`")
+
+
+def doctor(root: str) -> tuple[dict, int]:
+    """Read-only diagnosis: a broken store is reported with recovery steps, not just an error."""
+    problems = []
+    def problem(exc: Exception, fix: str | None = None) -> None:
+        code = getattr(exc, "code", "io_error")
+        if str(exc).startswith("Unexpected symlink"):
+            fix = SYMLINK_FIX
+        problems.append({"error": code, "message": str(exc),
+                         "fix": fix or OPEN_FIXES.get(code, "resolve the message, then rerun `worklog doctor`")})
+    report: dict = {}
+    try:
+        ws = Workspace.open(root)
+    except (WorklogError, OSError) as exc:
+        problem(exc)
+    else:
+        report["store"] = str(ws.store)
+        try:
+            report.update(Worklog(ws).stats())
+        except Corruption as exc:
+            problem(exc, FRONTIER_FIX)
+        except (WorklogError, OSError) as exc:
+            problem(exc)
+        if report.get("unexpected_files"):
+            problems.append({"error": "unexpected_files",
+                             "message": f"{ws.store} holds files Worklog does not own: " + ", ".join(report["unexpected_files"]),
+                             "fix": "inspect them, then move them out of the store (Worklog never reads them)"})
+        try:
+            Runtime(ws).get("doctor")  # Validate the bounded optional cache without modifying it.
+        except Corruption as exc:
+            problem(exc, "`worklog clear-runtime --confirm` discards hook flags only; cards are untouched")
+        except (WorklogError, OSError) as exc:
+            problem(exc)
+        report["adapters"], adapter_problems = inspect_adapters(ws)
+        problems += adapter_problems
+        if not report["adapters"]:
+            report["adapter_note"] = ("No project-local Worklog hooks in this checkout. They are untracked files, so "
+                                      "each Git worktree needs its own `worklog install claude|codex`; native plugin "
+                                      "shells, if you use them instead, are not visible here.")
+    report["problems"] = problems
+    report["ok"] = not problems
+    for p in problems:
+        print(json.dumps({"error": p["error"], "message": p["message"]}, ensure_ascii=False), file=sys.stderr)
+    return report, 0 if report["ok"] else 2
+
+
 def run(a) -> tuple[object, int]:
     if a.command == "hook":
         return run_hook(a), 0
+    if a.command == "doctor":
+        return doctor(a.root)
     ws = Workspace.open(a.root, create=a.command == "init", name=getattr(a, "name", None),
                         allow_legacy=a.command == "migrate")
     if a.command == "migrate":
@@ -182,17 +249,17 @@ def run(a) -> tuple[object, int]:
                      agents_stopped=a.confirm_agents_stopped), 0
     w = Worklog(ws)
     if a.command == "init":
+        w.read()  # Report a corrupt or missing frontier now, not as a later surprise.
         return {"version": __version__, "workspace_id": ws.workspace_id, "store": str(ws.store),
                 "mode": "frontier", "historical_slots": 3, "frontier_limit_bytes": 32768}, 0
     if a.command == "status":
         return w.read(), 0
-    if a.command in {"stats", "doctor"}:
-        result = w.stats()
-        if a.command == "doctor":
-            Runtime(ws).get("doctor")  # Validate the bounded optional cache without modifying it.
-            result["ok"] = not result["unexpected_files"]
-            return result, 0 if result["ok"] else 2
-        return result, 0
+    if a.command == "stats":
+        return w.stats(), 0
+    if a.command == "reset":
+        if not (a.discard_current_state and a.confirm):
+            raise Invalid("reset discards the unreadable frontier with no backup; pass --discard-current-state --confirm")
+        return w.reset(), 0
     if a.command == "show":
         return w.show(a.id), 0
     if a.command == "context":

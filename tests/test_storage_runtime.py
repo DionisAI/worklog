@@ -391,3 +391,113 @@ def test_init_refuses_a_symlinked_ignore_file(w, tmp_path):
     ignore.symlink_to(target)  # git does not follow an in-tree .gitignore symlink
     with pytest.raises(Invalid):
         Workspace.open(w.ws.root, create=True)
+
+
+def test_checkout_id_survives_moving_a_plain_workspace(tmp_path):
+    (tmp_path / "a").mkdir()
+    first = Worklog(Workspace.open(tmp_path / "a", create=True))
+    c = first.add("fix", "Fix", "current", "next")["card"]
+    c = first.claim("fix", c["revision"], session="s_mover")["card"]
+    (tmp_path / "a").rename(tmp_path / "b")
+    moved = Worklog(Workspace.open(tmp_path / "b"))
+    assert moved.ws.checkout_id == first.ws.checkout_id != moved.ws.legacy_checkout_id
+    assert moved.update("fix", c["revision"], {"next": "still mine"}, session="s_mover")["changed"]
+
+
+def test_checkout_ids_survive_moving_a_repo_and_its_worktree(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    def git(*args, cwd=root):
+        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=git_env())
+    git("init", "-q")
+    git("-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+    git("worktree", "add", "-q", str(tmp_path / "wt"))
+    main, linked = Workspace.open(root, create=True), Workspace.open(tmp_path / "wt")
+    assert main.checkout_id != linked.checkout_id and main.store == linked.store
+    root.rename(tmp_path / "moved")
+    git("worktree", "repair", cwd=tmp_path / "moved")
+    git("worktree", "move", str(tmp_path / "wt"), str(tmp_path / "wt2"), cwd=tmp_path / "moved")
+    assert Workspace.open(tmp_path / "moved").checkout_id == main.checkout_id
+    assert Workspace.open(tmp_path / "wt2").checkout_id == linked.checkout_id
+
+
+def test_case_variant_root_is_the_same_checkout(w):
+    variant = Path(str(w.ws.root).upper())
+    if not variant.exists():
+        pytest.skip("case-sensitive filesystem")
+    assert Workspace.open(variant).checkout_id == w.ws.checkout_id
+
+
+def test_owner_recorded_with_the_old_path_id_is_still_this_checkout(w, card):
+    w.claim("replay", card["revision"], session="s_old")
+    def legacy(s):
+        s["cards"]["replay"]["owner"]["checkout_id"] = w.ws.legacy_checkout_id
+    w.store.transaction(legacy)
+    c = w.show("replay")
+    c = w.update("replay", c["revision"], {"next": "written by the old owner"}, session="s_old")["card"]
+    other = w.add("other", "Other", "current", "next")["card"]
+    with pytest.raises(Conflict, match="One writer per checkout"):
+        w.claim("other", other["revision"], session="s_new")
+    refreshed = w.claim("replay", c["revision"], session="s_old")["card"]
+    assert refreshed["owner"]["checkout_id"] == w.ws.checkout_id and refreshed["revision"] != c["revision"]
+
+
+def test_owner_survives_git_init_of_a_plain_workspace(w, card):
+    c = w.claim("replay", card["revision"], session="s_owner")["card"]
+    before = w.ws.checkout_id
+    subprocess.run(["git", "-C", str(w.ws.root), "init", "-q"], check=True, env=git_env())
+    after = Worklog(Workspace.open(w.ws.root))
+    assert after.ws.git and after.ws.checkout_id == before
+    c = after.update("replay", c["revision"], {"next": "still mine"}, session="s_owner")["card"]
+    other = after.add("other", "Other", "current", "next")["card"]
+    with pytest.raises(Conflict, match="One writer per checkout"):
+        after.claim("other", other["revision"], session="s_second")
+    assert after.release_session("s_owner")["result"] == ["replay"]
+
+
+def test_directories_sharing_a_redirected_store_stay_separate_checkouts(tmp_path):
+    (tmp_path / "shared").mkdir()
+    shared = Workspace.open(tmp_path / "shared", create=True)
+    ids = []
+    for name, use_git in (("g1", True), ("g2", True), ("p1", False), ("p2", False)):
+        root = tmp_path / name
+        root.mkdir()
+        if use_git:
+            subprocess.run(["git", "-C", str(root), "init", "-q"], check=True, env=git_env())
+        (root / ".worklog").mkdir()
+        (root / ".worklog/workspace.json").write_text(json.dumps({"store": str(shared.store)}))
+        ws = Workspace.open(root)
+        assert ws.store == shared.store
+        ids.append(ws.checkout_id)
+    assert len(set(ids)) == 4
+
+
+def test_legacy_owner_compat_covers_release_advisory_hint_and_refresh(w, card):
+    from worklog.hooks import handle
+    w.claim("replay", card["revision"], session="s_old", harness="claude")
+    def legacy(s):
+        s["cards"]["replay"]["owner"]["checkout_id"] = w.ws.legacy_checkout_id
+    w.store.transaction(legacy)
+    advisory = handle({"cwd": str(w.ws.root), "session_id": "native-x", "hook_event_name": "PreToolUse",
+                       "tool_name": "Edit"}, "claude")
+    assert "replay" in advisory["hookSpecificOutput"]["additionalContext"]
+    other = w.add("other", "Other", "current", "next")["card"]
+    with pytest.raises(Conflict, match=r"\(claude, this checkout\)"):
+        w.claim("other", other["revision"], session="s_new")
+    refreshed = w.claim("replay", w.show("replay")["revision"], session="s_old", harness="codex")["card"]
+    assert refreshed["owner"]["harness"] == "codex" and refreshed["owner"]["checkout_id"] == w.ws.checkout_id
+    w.store.transaction(legacy)
+    assert w.release_session("s_old")["result"] == ["replay"] and w.show("replay")["owner"] is None
+
+
+def test_refresh_keeps_the_old_id_when_another_owner_holds_the_new_one(w, card):
+    w.claim("replay", card["revision"], session="s_old")
+    other = w.add("other", "Other", "current", "next")["card"]
+    def mixed(s):  # An inconsistent transitional state: two writers, one under each id.
+        s["cards"]["replay"]["owner"]["checkout_id"] = w.ws.legacy_checkout_id
+        s["cards"]["other"]["owner"] = {"session_id": "s_new", "harness": "manual", "account": "default",
+                                        "checkout_id": w.ws.checkout_id}
+    w.store.transaction(mixed)
+    refreshed = w.claim("replay", w.show("replay")["revision"], session="s_old", harness="codex")["card"]
+    assert refreshed["owner"]["harness"] == "codex"
+    assert refreshed["owner"]["checkout_id"] == w.ws.legacy_checkout_id

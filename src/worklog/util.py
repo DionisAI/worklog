@@ -111,12 +111,12 @@ def file_lock(path: Path, timeout: float = 10.0, *, shared: bool = False) -> Ite
 
 def load_json(path: Path, max_bytes: int) -> Any:
     if path.is_symlink():
-        raise Corruption(f"Unexpected symlink: {path.name}")
+        raise Corruption(f"Unexpected symlink: {path}")
     with path.open("rb") as stream:
         raw = stream.read(max_bytes + 1)
     if len(raw) > max_bytes:
-        raise Corruption(f"{path.name} exceeds its {max_bytes}-byte limit")
+        raise Corruption(f"{path} exceeds its {max_bytes}-byte limit")
     try:
         return json.loads(raw)
     except (ValueError, UnicodeError) as exc:
-        raise Corruption(f"Invalid JSON: {path.name}") from exc
+        raise Corruption(f"Invalid JSON: {path}") from exc

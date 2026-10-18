@@ -102,6 +102,9 @@ worklog resume replay --expect NEW_CARD_REV --session SESSION_B --harness codex
 
 handoff 更新同一张卡并释放负责人，不生成交接档案。接班者应核对真实代码和现有运行任务。
 同一个 checkout 只允许一个协作写入者；并行改代码时使用不同 Git worktree，它们共享 frontier。
+checkout 的身份由 workspace 加上"哪个检出"（主检出——普通目录也算主检出——或 worktree 的管理名）决定，
+移动、改名或在普通目录里 `git init` 都不会让负责人失效；但未固定的 Hook Session ID 仍包含路径，
+移动后只有固定的 `WORKLOG_SESSION_ID`（`worklog launch`）能继续写自己的卡。子 Agent 共用父会话身份。
 Worklog 不会阻止绕开工具的任意文件修改。
 
 Session 结束（SessionEnd Hook 或 `worklog launch` 退出）时，会在一个事务里释放它在本 checkout
@@ -251,7 +254,10 @@ worklog doctor
 
 ```sh
 worklog stats
-worklog doctor
+worklog doctor   # 检查存储、临时缓存和本检出的 Hook，每个问题附修复方法
+# frontier.json 无法读取（例如合并冲突）时：恢复一份完好的副本，或
+# worklog reset --discard-current-state --confirm（只替换无法读取的 frontier，卡片与历史节点会丢失）
+# 项目内 Hook 文件不受 Git 跟踪：每个 Git worktree 都要单独运行 worklog install
 # 源码包内
 python -m pytest -q
 PYTHONPATH=src python examples/demo.py

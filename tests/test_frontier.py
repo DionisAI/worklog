@@ -225,7 +225,7 @@ def test_claim_conflicts_name_the_blocker_and_the_exact_takeover(w, card):
 
 
 def test_release_session_frees_only_its_cards_in_this_checkout(w, card):
-    linked = Worklog(dataclasses.replace(w.ws, root=w.ws.root / "linked"))
+    linked = Worklog(dataclasses.replace(w.ws, root=w.ws.root / "linked", checkout="worktree:linked"))
     c = linked.claim("replay", card["revision"], session="ended")["card"]
     alive = w.add("alive", "Alive", "Current", "Next")["card"]
     w.claim("alive", alive["revision"], session="alive")
