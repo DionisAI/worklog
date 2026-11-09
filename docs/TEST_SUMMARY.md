@@ -19,6 +19,20 @@ demo; the coverage gate, soak and wheel steps were added after it). On macOS (Ap
 Silicon), repeated runs on Python 3.11, 3.12 and 3.13 measured 91.29%–91.38% statement
 coverage of 1,160 statements; `cli.py` is 89%, and about 65% when subprocesses are not counted.
 
+## 0.3.0 release verification (2026-11-08)
+
+- CI on `main` (`b09a7ca`) passed in all six jobs: ubuntu-latest and macos-latest with
+  Python 3.11, 3.12 and 3.13.
+- On macOS (Apple Silicon), the release branch passed 236 tests on Python 3.11, 3.12 and
+  3.13, with 92.67% statement coverage of 1,378 statements (subprocesses counted); the
+  demo, a 1,000-round soak, and `tools/smoke_release.py` on the built 0.3.0 wheel passed.
+- Live Claude Code 2.1.280 (macOS), in a real session in this repository: SessionStart and
+  UserPromptSubmit injected the frontier, and after a Bash call the Stop hook blocked once
+  with the reminder, which `worklog ack` cleared.
+- Live Codex (codex-cli 0.163.0, `codex exec`, workspace-write sandbox): with the rule from
+  `worklog install codex`, `worklog update` wrote the card while a `--root` form, which the
+  rule does not match, failed with `read_only` (PR #1).
+
 ## 0.2.0 release verification (2026-10-16, Linux, Python 3.13.5)
 
 - 131 tests passed; 83.67% statement coverage, not counting subprocesses.
@@ -37,6 +51,7 @@ byte-reproducible (the zip records build-time file timestamps), so no wheel hash
 
 ## Not tested
 
-Windows, network filesystems, real power loss, live logged-in Claude Code or Codex
-sessions (hook tests run the generated commands with simulated identities), and
-marketplace distribution of the native plugins.
+Windows, network filesystems, real power loss, an interactive Codex session's hooks, an
+end-to-end handoff between two real Claude accounts or from Claude to Codex (the steps run
+with simulated hook input), and marketplace distribution of the native plugins (the
+repository has no marketplace manifest).

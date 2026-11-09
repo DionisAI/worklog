@@ -26,11 +26,11 @@ worklog --version
 ```sh
 python3 -m venv "$HOME/.venvs/worklog"
 "$HOME/.venvs/worklog/bin/python" -m pip install --no-deps --force-reinstall \
-  /实际路径/workspace_worklog-0.2.0-py3-none-any.whl
+  /实际路径/workspace_worklog-0.3.0-py3-none-any.whl
 export PATH="$HOME/.venvs/worklog/bin:$PATH"
 ```
 
-不要把新的虚拟环境放在目标项目里。输出版本应为 `0.2.0`。
+不要把新的虚拟环境放在目标项目里。输出版本应为 `0.3.0`。
 
 未使用过 Worklog 的项目：
 
