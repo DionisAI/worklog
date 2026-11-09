@@ -5,6 +5,10 @@ Worklog Frontier Skill. Install the Python CLI first so `worklog` is on the PATH
 seen by your agent, then load the matching directory through that agent's plugin
 workflow. These are package shells, not uploaded marketplace listings.
 
+**Experimental in 0.3.0:** the repository has no plugin marketplace manifest, so these
+shells cannot be added through `/plugin marketplace add` yet, and they ship no Codex rule
+file. Use `worklog install claude|codex` unless you load a shell by hand.
+
 Use native plugin hooks OR `worklog install claude/codex`, not both. Disable the
 old 0.1 plugin when upgrading. Hook trust/enablement still belongs to the host.
 The project-local installer is the directly tested setup path; live provider UI

@@ -1,4 +1,4 @@
-# Worklog Frontier 0.2.0
+# Worklog Frontier 0.3.0
 
 **Current state, next action, still-valid cautions — plus at most THREE historical
 landmarks for the entire workspace. Nothing else becomes a growing work history.**
@@ -48,7 +48,8 @@ The account flag is an identity label, **not an authentication/account switch**.
 Hooks still need to be enabled/trusted in the host agent; restart it after installing.
 The installer merges only Worklog handlers and removes obsolete Worklog 0.1 handlers.
 It does not rewrite provider credentials, copy transcripts, or create backup histories.
-Use either project-local hooks or the optional native plugin shells, not both.
+Use either project-local hooks or the optional native plugin shells (experimental, see
+[plugins/README.md](plugins/README.md)), not both.
 Project-local hook files are untracked: Codex needs `worklog install codex` (and folder
 trust) in each Git worktree, while Claude Code 2.1.211+ uses the main checkout's hooks for
 linked worktrees; plugin shells apply everywhere.

@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-08
+
+Upgrading from 0.2.0: reinstall the CLI (`uv tool install --force .` or pip), end running
+agent sessions, then in each project rerun `worklog install claude` / `worklog install codex`
+(new hook commands with `-P`, the PreToolUse matcher and the Codex rule; Codex asks you to
+trust changed hooks in `/hooks`) and `worklog init` (adds `.worklog/.gitignore` to a
+plain-directory store; also after `worklog migrate --apply`). Stores and cards need no
+migration: owners recorded under 0.2.0's path-based checkout IDs keep working. Behaviour
+changes: SessionEnd and the end of `worklog launch` now release the session's cards as
+`needs_check`, and `worklog doctor` reports `problems`, `adapters` and `adapter_note`
+with unchanged exit codes.
 
 Hooks fail open: `worklog hook` never exits 2 (which hosts read as "block"); store,
 input and internal errors become `{}` plus a stderr line, with a `systemMessage` at
